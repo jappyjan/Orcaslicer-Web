@@ -23,6 +23,10 @@ build/
 docker/extra-ca-certificates/*.crt
 docker/extra-ca-certificates/*.pem
 
+# agent tooling: isolated worktrees are transient checkouts of this same repo
+# (they contain their own .git file — committing one corrupts the tree)
+.claude/worktrees/
+
 # test / tooling caches
 coverage/
 .eslintcache

@@ -205,6 +205,57 @@ Metadata/
 
 ---
 
+## VERIFIED CLI deviations — measured against OrcaSlicer 2.4.2 in M0
+
+The reference section above was supplied by production users. The following were
+**empirically verified against the pinned binary in our own container** and take
+precedence over it where they conflict. Read these before writing any code that
+touches the CLI.
+
+1. **The CLI does not resolve preset `inherits` chains — and fails silently.**
+   This is the most important finding in the project. `--load-settings` /
+   `--load-filaments` apply only the keys *literally present* in the file passed;
+   every other key falls back to the compiled-in `PrintConfig` default. Measured:
+   slicing with the stock `BBL/machine/Bambu Lab X1 Carbon 0.4 nozzle.json` gave
+   `printable_area` 200×200 instead of 256×256, `printable_height` 100 instead of
+   250, and `filament_density` 0 → `used_g="0.00"`. It still **exits 0 and
+   produces plausible-looking G-code.** Flattening the chain first fixes all of
+   it. Consequences:
+   - **Profiles must be fully flattened before they reach the CLI. Never hand a
+     raw `resources/profiles/` file to the slicer.**
+   - `scripts/resolve-profile.mjs` is the M0 stopgap resolver. **M2's profile
+     catalog owns this properly** and replaces it.
+2. **Never combine `--outputdir` with an absolute `--export-3mf` path.** They are
+   concatenated (`/work/out//work/out/x.3mf`) and export fails with
+   `return -13` — **but the process still exits 0.** Exit code alone is not a
+   success signal. Always assert the artefact exists and is non-empty.
+3. **`--filament-colour` is not an advertised flag in 2.4.2's `--help`**, despite
+   appearing in the canonical invocation above. It presumably still works as a raw
+   `PrintConfig` key (`filament_colour`); verify before relying on it.
+4. **G-code shape breaks naive regexes.** E values are emitted with no leading
+   digit (`E.02345`), and arc fitting turns a share of extrusions into `G2`/`G3`.
+   A `^G1 .*E[0-9]` match found 8 lines out of 6946 real extrusions. Critical for
+   M5's parser.
+5. **`--min-save` omits `Metadata/plate_1.png` entirely** rather than writing a
+   blank one, and drops `3D/Objects/*.model`. The thumbnail-rewrite path must
+   handle **absent**, not merely blank.
+6. **`slice_info.config`'s `first_layer_time` is uninitialised garbage**
+   (e.g. `16745348785772691456.000000`). Use `prediction` (seconds) and the
+   per-filament `used_m` / `used_g` attributes only.
+7. **Set `XDG_RUNTIME_DIR`** or every run emits `error: XDG_RUNTIME_DIR is invalid
+   or not set` to stderr. Non-fatal, but it pollutes stderr parsing. The image
+   already sets it.
+
+### Environment notes for local development
+- The Docker daemon is not running at session start in the dev container; start it
+  with `nohup dockerd &` (sandbox disabled).
+- Container HTTPS is TLS-intercepted in this environment, so
+  `docker/extra-ca-certificates/ccr-proxy.crt` (gitignored) must exist locally for
+  `docker compose build` to fetch anything. It is a no-op on a clean machine and
+  in CI.
+
+---
+
 ## Milestones
 
 Delivered in order. Each milestone must be independently runnable and

@@ -1,0 +1,13 @@
+node_modules
+dist
+build
+coverage
+work
+*.tsbuildinfo
+# byte-exact fixtures — reformatting these would break the assertions they back
+test/golden
+test/fixtures
+package-lock.json
+
+# authoritative brief — kept byte-exact
+docs/SPEC.md

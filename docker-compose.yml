@@ -1,0 +1,40 @@
+# OrcaSlicer Web — development / verification stack.
+#
+# M0 ships only the verification services. The `api` service arrives with M1.
+#
+#   docker compose run --rm smoke        # slice a bundled STL, assert the artefacts
+#   docker compose run --rm help-check   # assert the CLI surface has not drifted
+#
+# Neither service needs a display server, a GPU, or extra privileges.
+
+x-orca-image: &orca-image
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: orcaslicer-web:dev
+  init: true
+  # Hard constraint #4: /work holds disposable per-job sandboxes only. Keeping it on
+  # a tmpfs here makes "leaves nothing behind" trivially observable in dev; in
+  # production it is a real volume on disk, sized for the concurrency limit.
+  tmpfs:
+    - /work:exec,size=2g,mode=1777
+
+services:
+  smoke:
+    <<: *orca-image
+    command: ['/app/scripts/smoke.sh']
+
+  help-check:
+    <<: *orca-image
+    entrypoint: ['/app/scripts/check-cli-help.sh']
+    command: []
+    volumes:
+      # so `help-check --update` writes the refreshed golden back into the repo
+      - ./test/golden:/app/test/golden
+
+  # Convenience: a shell in the image with the slicer on PATH.
+  shell:
+    <<: *orca-image
+    entrypoint: ['/bin/bash']
+    command: []
+    profiles: ['tools']

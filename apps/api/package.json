@@ -1,0 +1,17 @@
+{
+  "name": "@orca-web/api",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Fastify API: job orchestration, SlicerEngine adapters, static hosting of the web client",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@orca-web/shared": "*"
+  }
+}

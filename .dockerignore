@@ -1,0 +1,19 @@
+# Keep the build context small and the image reproducible. scripts/ and test/ are
+# deliberately NOT excluded — the smoke test and the golden --help live there.
+.git
+.github
+node_modules
+**/node_modules
+**/dist
+**/build
+**/*.tsbuildinfo
+work
+/work
+coverage
+*.AppImage
+*.log
+.env
+.env.*
+docs
+README.md
+AGPL-NOTICE.md

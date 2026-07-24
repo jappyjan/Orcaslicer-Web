@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast feedback on the TypeScript side. Runs without Docker.
+  static:
+    name: format / lint / typecheck / unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Prettier
+        run: npm run format:check
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+  # The real thing: build the image with the pinned OrcaSlicer and slice something.
+  # Hard constraint #2 — the golden --help diff is what catches a CLI-surface change
+  # sneaking in on a version bump, so it runs before the slice and is not allowed to
+  # be skipped.
+  container:
+    name: image / cli drift / smoke slice
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker compose build
+
+      - name: Report image size
+        run: docker image ls orcaslicer-web:dev
+
+      - name: CLI surface drift check
+        run: docker compose run --rm help-check
+
+      - name: Smoke slice (headless, no display server)
+        run: docker compose run --rm smoke
+
+      - name: Assert no display server was involved
+        # Belt and braces: the runner must not have had an X server for the slice to
+        # have proven anything. The smoke script asserts this too.
+        run: |
+          if [ -n "${DISPLAY:-}" ]; then
+            echo "::error::DISPLAY is set on the runner; the headless assertion is meaningless"
+            exit 1
+          fi
+          echo "no DISPLAY on the runner"

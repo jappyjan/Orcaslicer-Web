@@ -1,0 +1,23 @@
+{
+  "name": "@orca-web/shared",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Types and constants shared between the API and the web client",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean"
+  }
+}

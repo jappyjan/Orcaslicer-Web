@@ -1,0 +1,42 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+build/
+*.tsbuildinfo
+.vite/
+
+# job sandboxes (hard constraint #4 — these are ephemeral, never commit one)
+/work/
+
+# downloaded slicer artefacts — the AppImage is fetched at image-build time, never vendored
+*.AppImage
+*.gcode
+*.gcode.3mf
+!test/fixtures/*.gcode.3mf
+
+# extractor output (regenerated per OrcaSlicer version)
+/generated/
+
+# local TLS interception certs for `docker build` behind a proxy (see Dockerfile)
+docker/extra-ca-certificates/*.crt
+docker/extra-ca-certificates/*.pem
+
+# test / tooling caches
+coverage/
+.eslintcache
+.nyc_output/
+
+# local env
+.env
+.env.*
+!.env.example
+
+# editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp

@@ -1,0 +1,14 @@
+{
+  "name": "@orca-web/web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Mobile-first React client (Vite + Tailwind + three.js), built to static assets served by the API",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "build": "echo \"[web] no build yet — M3 adds the Vite app\""
+  },
+  "dependencies": {
+    "@orca-web/shared": "*"
+  }
+}

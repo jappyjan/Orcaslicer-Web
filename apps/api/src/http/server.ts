@@ -8,6 +8,7 @@
  *   GET    /jobs/:id/events           SSE progress
  *   GET    /jobs/:id/artifacts        artefact list
  *   GET    /jobs/:id/artifacts/:name  download (.gcode.3mf and the raw .gcode)
+ *   GET    /jobs/:id/preview/*        G-code preview index + layer data (M5)
  *   DELETE /jobs/:id                  cancel and clean up
  *   GET    /catalog                   vendors → printer models → nozzle variants (?schema=1)
  *   GET    /catalog/presets           resolved process/filament presets for a printer
@@ -33,6 +34,8 @@ import type { CatalogService } from '../catalog/service.js';
 import type { AppConfig } from '../config.js';
 import type { SlicerEngine } from '../engine/port.js';
 import { registerCatalogRoutes } from './catalog-routes.js';
+import { registerPreviewRoutes } from './routes/preview.js';
+import { PreviewStore } from '../preview/store.js';
 import { isApiPath, registerStatic, wantsHtml } from './static.js';
 import {
   BadRequestError,
@@ -61,6 +64,8 @@ export interface ServerDeps {
   resolver: ProfileResolver;
   /** Absent only when the generated artefacts could not be loaded; `/catalog` then 503s. */
   catalog: CatalogService | undefined;
+  /** M5's lazy G-code-preview cache. Defaulted from `artifacts`; injectable for tests. */
+  preview?: PreviewStore;
 }
 
 const SSE_HEARTBEAT_MS = 15_000;
@@ -119,6 +124,14 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   // -------------------------------------------------------------------------
 
   registerCatalogRoutes(app, deps.catalog);
+  registerPreviewRoutes(app, {
+    jobs: deps.jobs,
+    preview:
+      deps.preview ??
+      new PreviewStore(deps.artifacts, {
+        log: (message, fields) => app.log.info(fields, message),
+      }),
+  });
 
   app.get('/healthz', async (): Promise<HealthResponse> => {
     const [info, stats] = await Promise.all([deps.engine.probe(), deps.queue.stats()]);

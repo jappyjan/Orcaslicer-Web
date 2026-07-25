@@ -5,5 +5,9 @@
     "outDir": "./dist"
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../../packages/shared" }, { "path": "../../packages/catalog" }]
+  "references": [
+    { "path": "../../packages/shared" },
+    { "path": "../../packages/catalog" },
+    { "path": "../../packages/gcode" }
+  ]
 }

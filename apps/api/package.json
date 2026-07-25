@@ -15,6 +15,7 @@
     "@fastify/multipart": "^9.2.1",
     "@fastify/static": "^10.1.2",
     "@orca-web/catalog": "*",
+    "@orca-web/gcode": "*",
     "@orca-web/shared": "*",
     "fastify": "^5.6.1",
     "fflate": "^0.8.2"

@@ -282,6 +282,41 @@ touches the CLI.
     own typed errors. A stderr diagnostic match should beat the exit-code table
     (that is how the `G92 E0` / relative-extruder case is detected).
 
+### Added in M5 — measured while building the G-code preview parser
+
+13. **The G-code marker set is not the one this brief assumed.** M5's description says
+    feature type comes from `;TYPE:` comments and layer boundaries from `;LAYER_CHANGE` /
+    `;Z:`. 2.4.2 emits **none of those**. It writes `; CHANGE_LAYER`, `; Z_HEIGHT: 0.2`,
+    `; LAYER_HEIGHT: 0.2`, `; FEATURE: Outer wall` and `; LINE_WIDTH: 0.393713` — all with
+    a leading space. A parser keyed on the assumed spellings produces one layer of
+    untyped segments **and passes every smoke test**. The full measured set and the
+    role-name table are in docs/GCODE-PREVIEW-FORMAT.md.
+14. **Custom G-code blocks are copied into the output verbatim, indentation included.**
+    Machine start/end G-code from the profile arrives as `    G1 X65.000 E1.24726 F2015.5`.
+    Treating a leading space as "probably a comment" silently drops the prime line — 105
+    moves and 585 mm of deposited material — and nothing counts it. Skip leading
+    whitespace before deciding what a line is.
+15. **`T1000`, `T1100` and `T255` are not tool changes.** Bambu machine G-code uses them
+    as control codes in the start and end blocks. A naive `^T(\d+)` colours the whole
+    model as extruder 1000. Only accept a small tool index (`packages/gcode` cuts at 64).
+16. **`--scale` segfaults.** `orca-slicer … --scale 2 …` dies with SIGSEGV in ~0.1 s, at
+    any factor tried, on an STL that slices fine without it. Scale geometry before it
+    reaches the CLI; do not offer a scale flag through to the binary.
+17. **Boolean `PrintConfig` keys are switches, not flags with a value.**
+    `--use-relative-e-distances 0` is rejected with `No such file: 0` — the `0` is taken
+    as a positional model path — and `--enable-support 1` the same way. Pass the bare flag
+    to turn one on, and the `=` form (`--use-relative-e-distances=0`) to turn one off.
+18. **Multi-filament jobs could not be made to slice at all.** Two filaments on one plate
+    fail three different ways, none of them ours: BBL machine profiles reject it with
+    `Grouping error: PLA can not be placed in the right nozzle` (exit 156 = -100) even on
+    a single-nozzle P1S; adding `--filament-map-mode Manual --filament-map "1,1"`
+    segfaults; and a genuinely multi-tool machine (Prusa XL 5T) segfaults too. Two PLAs
+    with different temperatures are additionally rejected up front with a mixed-temperature
+    error. **This blocks any multi-material work and needs isolating before M4's
+    per-object filament assignment can be trusted end to end.** The preview parser tracks
+    tool index and is exercised against the pseudo-tools of #15, but no real `T0`/`T1`
+    output exists to test against yet.
+
 ### Environment notes for local development
 - The Docker daemon is not running at session start in the dev container; start it
   with `nohup dockerd &` (sandbox disabled).

@@ -91,17 +91,20 @@ docker compose run --rm shell
 `docker compose up api` starts it on `:8080`. Everything is JSON except the multipart
 upload and the artefact downloads.
 
-| Endpoint                        |                                                               |
-| ------------------------------- | ------------------------------------------------------------- |
-| `POST /jobs`                    | multipart: model files + a `descriptor` JSON field → `202`    |
-| `GET /jobs/:id`                 | state, progress, warnings, stats, artefacts                   |
-| `GET /jobs/:id/events`          | SSE: `state`, `progress`, `done`, `failed`                    |
-| `GET /jobs/:id/artifacts/:name` | `result.gcode.3mf` and `plate_N.gcode`                        |
-| `DELETE /jobs/:id`              | cancel and clean up → `204`                                   |
-| `POST /models`                  | upload without slicing → content ids                          |
-| `GET /catalog`                  | vendors → printer models → nozzle variants (`?schema=1`)      |
-| `GET /catalog/presets`          | `?type=process\|filament&model=…&nozzle=…` → resolved presets |
-| `GET /healthz`                  | engine and queue state, resolver, catalog counts              |
+| Endpoint                            |                                                               |
+| ----------------------------------- | ------------------------------------------------------------- |
+| `POST /jobs`                        | multipart: model files + a `descriptor` JSON field → `202`    |
+| `GET /jobs/:id`                     | state, progress, warnings, stats, artefacts                   |
+| `GET /jobs/:id/events`              | SSE: `state`, `progress`, `done`, `failed`                    |
+| `GET /jobs/:id/artifacts/:name`     | `result.gcode.3mf` and `plate_N.gcode`                        |
+| `GET /jobs/:id/preview`             | which plates have a G-code preview                            |
+| `GET /jobs/:id/preview/:plate`      | the preview's layer index (JSON)                              |
+| `GET /jobs/:id/preview/:plate/data` | layer chunks, `Range`-addressable (M5)                        |
+| `DELETE /jobs/:id`                  | cancel and clean up → `204`                                   |
+| `POST /models`                      | upload without slicing → content ids                          |
+| `GET /catalog`                      | vendors → printer models → nozzle variants (`?schema=1`)      |
+| `GET /catalog/presets`              | `?type=process\|filament&model=…&nozzle=…` → resolved presets |
+| `GET /healthz`                      | engine and queue state, resolver, catalog counts              |
 
 ```bash
 curl -X POST localhost:8080/jobs \
@@ -137,6 +140,31 @@ justified in [`apps/api/src/config.ts`](apps/api/src/config.ts). The ones worth 
 is stubbed and throws), `MODEL_LIBRARY_MAX_BYTES`.
 
 Design decisions behind the boundaries: [`docs/adr/`](docs/adr/).
+
+## The G-code preview (M5, server side)
+
+G-code is never sent to the browser. `@orca-web/gcode` parses a plate's G-code **once**,
+streaming, into a compact binary the client can load a layer at a time: fixed 18-byte
+records carrying position, width, height, feature type and tool index, quantised onto a
+grid spanning the toolpath, plus a JSON index of per-layer byte offsets.
+
+```bash
+curl -s localhost:8080/jobs/$ID/preview/1 | jq '.stats, .layers.offset[0:3]'
+# then fetch just layers 120-139:
+curl -s -H 'Range: bytes=1234-5678' localhost:8080/jobs/$ID/preview/1/data -o window.bin
+```
+
+Measured on a real 42 MiB G-code (a 90 mm box at 0.1 mm layers, 25 % infill): parsed in
+**2.7 s** at **150 MB** peak RSS into **26 MiB** across **900 layers**, with a **23 KB**
+index — so a twenty-layer window is about 600 KB rather than the whole model. The parse is
+lazy, single-flighted, cached next to the job's artefacts and deleted with the job; both
+endpoints are strongly ETagged and `immutable`.
+
+Byte layout, quantisation, the index shape and the reasoning behind each choice:
+[`docs/GCODE-PREVIEW-FORMAT.md`](docs/GCODE-PREVIEW-FORMAT.md). It also documents the
+marker set OrcaSlicer 2.4.2 **actually** emits (`; FEATURE:`, `; CHANGE_LAYER`,
+`; Z_HEIGHT:` — not the `;TYPE:` / `;LAYER_CHANGE` the spec assumed) and the arc and
+leading-dot-`E` traps from verified deviation #4.
 
 ## The web app (M3)
 

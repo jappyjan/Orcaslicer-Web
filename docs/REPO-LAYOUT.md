@@ -35,7 +35,7 @@ parallel structure.
 ├── scripts/                 # shell/JS entry points run inside the container
 │   ├── smoke.sh
 │   ├── check-cli-help.sh
-│   └── resolve-profile.mjs
+│   └── flatten-preset.mjs
 │
 ├── test/
 │   ├── fixtures/            # committed test inputs (cube20.stl, 684 bytes)
@@ -85,8 +85,13 @@ config files.
 **`scripts/` is not a workspace.** These are container entry points invoked by
 `docker compose run`, not npm packages. They must keep working in an image that has no
 `node_modules` — the M0 image ships the slicer, Node and these scripts, and nothing else.
-`scripts/resolve-profile.mjs` is an explicit stopgap that M2 folds into
-`tools/extractors` and deletes.
+M2 deleted the M0 stopgap `scripts/resolve-profile.mjs` (it resolved `inherits` only
+within a preset's own directory, which is wrong for 1939 of the 11 286 inheritance edges
+in 2.4.2) and replaced it with `scripts/flatten-preset.mjs`. The authoritative resolver
+now lives in `tools/extractors`; `flatten-preset.mjs` survives only as the container-side
+bootstrap for the smoke test, because the image still has no `node_modules` or compiled
+`dist/`. Once the image builds the Node workspaces, delete it and call
+`ProfileCatalogQuery.flattenForSlicer` instead.
 
 **Ports and adapters inside `apps/api/src`.** Each `*/port.ts` is an interface plus its
 error types and nothing else; adapters sit beside it and are selected in exactly one

@@ -75,17 +75,21 @@ mkdir -p "${SANDBOX}/profiles" "${SANDBOX}/out"
 # ---------------------------------------------------------------------------
 # Flatten the preset inheritance chains.
 #
-# GOTCHA (verified on 2.4.2, see scripts/resolve-profile.mjs): the CLI does not
+# GOTCHA (verified on 2.4.2, see scripts/flatten-preset.mjs): the CLI does not
 # resolve `inherits`. Handing it a stock resources/profiles JSON silently applies
 # only that file's own keys and falls back to compiled-in defaults for the rest —
 # you get a 200x200 bed and filament_density 0 (hence used_g = 0.00) instead of
 # the printer's real values. M2's profile catalog owns the production version of
 # this; here we prove the flattened path end to end.
+#
+# M2 replaced the M0 stopgap `resolve-profile.mjs` with `flatten-preset.mjs`, which
+# resolves `inherits` by name across the whole vendor sub-tree instead of only the
+# preset's own directory. Same CLI contract: <input.json> <output.json>.
 # ---------------------------------------------------------------------------
 resolve() {
   local src="$1" dst="$2" kind="$3"
   [ -f "$src" ] || fail "${kind} preset not found: ${src}"
-  node "${APP_DIR}/scripts/resolve-profile.mjs" "$src" "$dst" \
+  node "${APP_DIR}/scripts/flatten-preset.mjs" "$src" "$dst" \
     || fail "could not resolve the inherits chain of ${kind} preset '${src}'"
 }
 resolve "${PROFILES}/machine/${MACHINE_PRESET}.json"   "${SANDBOX}/profiles/machine.json"  machine

@@ -9,6 +9,16 @@
  *    such a state is at best invisible and at worst a hidden affordance. Press feedback
  *    is `:active` only, and `apps/web/src/no-hover.test.ts` fails the build if one
  *    creeps in — including from a comment like this one, hence the wording.
+ *
+ * The layout is one full-viewport 3D canvas with everything else floating over it, so
+ * two more things belong here rather than in a component:
+ *
+ *  - `glass`: the one surface treatment every floating panel uses. A panel over a live
+ *    3D view has to stay legible against both an almost-black bed and a bright object,
+ *    which is a translucent fill *plus* a blur *plus* a border — not an opacity class.
+ *  - `--free-*`: the rectangle of canvas that no panel is covering, published by
+ *    `Workspace` as custom properties. Overlays position against it, and the scene
+ *    shifts its projection into it, so the model is never centred underneath the dock.
  */
 
 @theme {
@@ -26,6 +36,19 @@
   --color-ok: #4ade80;
 
   --spacing-tap: 3rem;
+  /* The floating tool rail: 3.5rem is a 48px icon plus its caption. */
+  --spacing-rail: 3.5rem;
+}
+
+/*
+ * The free rectangle, defaulted so an overlay rendered outside `Workspace` (a test, a
+ * loading state) still lands somewhere sensible.
+ */
+:root {
+  --free-top: 0px;
+  --free-right: 0px;
+  --free-bottom: 0px;
+  --free-left: 0px;
 }
 
 @layer base {
@@ -134,4 +157,46 @@
 
 @utility sheet-in {
   animation: sheet-in 0.18s ease-out;
+}
+
+/*
+ * Every floating panel: the dock, the tool rail, the top bar, the status pills.
+ *
+ * The blur is what makes a control legible over a moving 3D view; the border is what
+ * keeps its edge visible when the pixels behind it happen to be the same colour as the
+ * fill. `color-mix` rather than an `/80` colour so the token stays in one place.
+ */
+@utility glass {
+  background: color-mix(in srgb, var(--color-surface) 86%, transparent);
+  backdrop-filter: blur(14px) saturate(1.15);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+  border: 1px solid color-mix(in srgb, var(--color-line) 85%, transparent);
+  box-shadow: 0 10px 30px -12px rgb(0 0 0 / 0.65);
+}
+
+/*
+ * A range input turned on its side, for the layer slider that runs down the right edge
+ * of the preview — the same place OrcaSlicer's desktop build puts it, and the only place
+ * a 900-step control fits on a phone without stealing height from the view.
+ *
+ * `writing-mode: vertical-lr` + `direction: rtl` is the standard spelling (Chrome 122+,
+ * Safari 17.4+); `appearance: slider-vertical` is the older WebKit one and is still what
+ * a 2023 Android WebView understands. Both are set: whichever the engine knows wins, and
+ * neither breaks the other.
+ */
+@utility range-vertical {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  -webkit-appearance: slider-vertical;
+  touch-action: none;
+}
+
+/* A scroll container that does not paint a bar over a translucent panel. */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
 }

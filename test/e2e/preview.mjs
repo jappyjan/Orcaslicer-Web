@@ -416,15 +416,25 @@ async function main() {
     const slider = await page.getByTestId('preview-layer').boundingBox();
     const scrubStart = Date.now();
     const beforeScrub = await timings();
+    // The slider runs down the right-hand edge of the viewport now, the way the desktop
+    // build's does, so the drag follows its long axis rather than assuming a horizontal
+    // one. Everything measured below — frames, long tasks, JavaScript time — is unchanged
+    // by which way it points.
+    const vertical = slider.height > slider.width;
+    const along = vertical ? slider.height : slider.width;
+    const pointAt = (distance) =>
+      vertical
+        ? [slider.x + slider.width / 2, slider.y + distance]
+        : [slider.x + distance, slider.y + slider.height / 2];
     // Two passes across the full length of the slider — the whole 900-layer model, there
     // and back, at roughly the speed a thumb moves.
     for (let pass = 0; pass < 2; pass += 1) {
-      const from = pass % 2 === 0 ? slider.x + 6 : slider.x + slider.width - 6;
-      const to = pass % 2 === 0 ? slider.x + slider.width - 6 : slider.x + 6;
-      await page.mouse.move(from, slider.y + slider.height / 2);
+      const from = pass % 2 === 0 ? 6 : along - 6;
+      const to = pass % 2 === 0 ? along - 6 : 6;
+      await page.mouse.move(...pointAt(from));
       await page.mouse.down();
       for (let step = 1; step <= 30; step += 1) {
-        await page.mouse.move(from + ((to - from) * step) / 30, slider.y + slider.height / 2);
+        await page.mouse.move(...pointAt(from + ((to - from) * step) / 30));
         await page.waitForTimeout(16);
       }
       await page.mouse.up();

@@ -56,7 +56,7 @@ import {
   type ColourMode,
   type LayerWindow,
 } from '../state/preview.ts';
-import { buildBed, disposeTree } from './bed.ts';
+import { buildBed, disposeTree, fitDistance, type Insets } from './bed.ts';
 import { TouchControls } from './touch-controls.ts';
 
 /** Record layout, mirrored from `packages/gcode/src/format.ts`. */
@@ -133,6 +133,13 @@ export class PreviewScene {
   private disposed = false;
   private building = false;
   private lastRender = 0;
+  private offsetX = 0;
+  private offsetY = 0;
+  /** What a fit should get into frame: a centre and the radius of a sphere around it. */
+  private readonly fitCentre = new Vector3(128, 128, 0);
+  private fitRadius = 160;
+  /** How much of the canvas the panels are covering, in CSS pixels. */
+  private insets: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -229,6 +236,42 @@ export class PreviewScene {
     this.renderer.setPixelRatio(Math.min(globalThis.devicePixelRatio ?? 1, 2));
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
+    this.applyFrameOffset();
+    this.fit();
+  }
+
+  /**
+   * How much of the canvas the floating panels are covering — see `PlaterScene`.
+   *
+   * The preview needs it more than the plater does: its dock carries the window's legend
+   * and byte counts, and the layer slider runs down the free rectangle's right edge, so
+   * the toolpath has appreciably less than the full canvas to sit in.
+   */
+  setViewport(insets: Insets): void {
+    this.insets = insets;
+    const dx = (insets.left - insets.right) / 2;
+    const dy = (insets.top - insets.bottom) / 2;
+    if (this.offsetX === dx && this.offsetY === dy) return;
+    this.offsetX = dx;
+    this.offsetY = dy;
+    this.applyFrameOffset();
+  }
+
+  private fit(): void {
+    this.controls.frame(
+      this.fitCentre,
+      fitDistance(this.camera, this.canvas, this.insets, this.fitRadius),
+    );
+  }
+
+  private applyFrameOffset(): void {
+    const width = this.canvas.clientWidth || 1;
+    const height = this.canvas.clientHeight || 1;
+    if (this.offsetX === 0 && this.offsetY === 0) {
+      this.camera.clearViewOffset();
+    } else {
+      this.camera.setViewOffset(width, height, -this.offsetX, -this.offsetY, width, height);
+    }
     this.camera.updateProjectionMatrix();
     this.invalidate();
   }
@@ -446,22 +489,24 @@ export class PreviewScene {
     const [maxX, maxY] = index.bounds.max;
     const z = index.layers.z[window.last] ?? index.bounds.max[2];
     const span = Math.max(maxX - minX, maxY - minY, 20);
-    this.controls.frame(
-      new Vector3(
-        (minX + maxX) / 2 + this.toolpath.position.x,
-        (minY + maxY) / 2 + this.toolpath.position.y,
-        Math.min(z, index.bounds.max[2]) * 0.5,
-      ),
-      Math.max(span, this.bedSize * 0.6) * 1.4,
+    this.fitCentre.set(
+      (minX + maxX) / 2 + this.toolpath.position.x,
+      (minY + maxY) / 2 + this.toolpath.position.y,
+      Math.min(z, index.bounds.max[2]) * 0.5,
     );
+    this.fitRadius = Math.max(span, this.bedSize * 0.6) * 0.7;
+    this.fit();
   }
 
+  /** The camera buttons re-fit as well as re-aim: "3D" and "Top" mean "show me the print". */
   resetView(): void {
     this.controls.reset();
+    this.fit();
   }
 
   topView(): void {
     this.controls.top();
+    this.fit();
   }
 
   // -- accounting -----------------------------------------------------------

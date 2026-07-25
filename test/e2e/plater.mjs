@@ -293,8 +293,9 @@ async function main() {
     check('printer, nozzle and presets chosen', true);
 
     // --- the plater -------------------------------------------------------
+    // There is no longer a screen to open: the plate *is* the app, behind the floating
+    // panels, from the first paint. The workspace and its canvas are already up.
     console.log('\nplater');
-    await page.getByTestId('row-plate').tap();
     await page.getByTestId('plater').waitFor();
     await page.getByTestId('plater-canvas').waitFor();
     check(
@@ -399,7 +400,10 @@ async function main() {
     check('the plate reports no problem', (await page.getByTestId('plate-problem').count()) === 0);
 
     // --- the touch gestures, on the real canvas ---------------------------
-    const canvas = await page.getByTestId('plater-canvas').boundingBox();
+    // The canvas is the whole viewport now, so its own centre can be underneath the
+    // dock. Gestures go to the middle of the *free* rectangle — the part no panel is
+    // covering, which is what the workspace publishes as `--free-*`.
+    const canvas = await freeRect(page);
     const before = await screenshotHash(page);
     // One finger orbits.
     await page.touchscreen.tap(canvas.x + canvas.width / 2, canvas.y + canvas.height / 2);
@@ -453,7 +457,7 @@ async function main() {
 
     // --- slice ------------------------------------------------------------
     console.log('\nslice');
-    await page.getByTestId('plater-slice').tap();
+    await page.getByTestId('slice-button').tap();
     await page.getByTestId('job-state').waitFor({ timeout: 60_000 });
     await page.waitForFunction(
       () => document.querySelector('[data-testid="job-state"]')?.textContent?.trim() === 'Done',
@@ -553,6 +557,26 @@ async function main() {
     console.error(`\nFAILED:\n${failed.map((entry) => `  - ${entry.name}`).join('\n')}`);
     process.exitCode = 1;
   }
+}
+
+/**
+ * The part of the viewport no floating panel is covering, as a bounding box.
+ *
+ * Read from the custom properties the workspace publishes rather than measured, so this
+ * agrees with the projection offset the scene is applying by construction.
+ */
+async function freeRect(page) {
+  return page.evaluate(() => {
+    // `data-detent` is on the workspace root, which is where the properties are set.
+    const root = document.querySelector('[data-detent]') ?? document.documentElement;
+    const style = getComputedStyle(root);
+    const at = (name) => Number.parseFloat(style.getPropertyValue(name)) || 0;
+    const top = at('--free-top');
+    const left = at('--free-left');
+    const width = window.innerWidth - left - at('--free-right');
+    const height = window.innerHeight - top - at('--free-bottom');
+    return { x: left, y: top, width, height };
+  });
 }
 
 /** The x/y each object reports on screen, read through the Move fields. */

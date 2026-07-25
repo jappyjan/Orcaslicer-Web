@@ -1,29 +1,32 @@
 /**
  * The progress and results panels, driven by the event sequence a real cube produces.
+ *
+ * The panel now lives in the workspace dock rather than on a screen of its own, which is
+ * a layout change and deliberately not a behaviour one: everything asserted here — the
+ * indeterminate bar before the first number, the quiet-gap reassurance, the four stats,
+ * both downloads — is the same contract M3 shipped.
  */
 
 import type { JobSummary } from '@orca-web/shared';
 import { render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initialProgress, QUIET_AFTER_MS, reduceProgress } from '../state/progress.ts';
-import { JobScreen } from './JobScreen.tsx';
+import { JobPanel } from './JobPanel.tsx';
 
 afterEach(() => {
   document.body.innerHTML = '';
 });
 
 const T0 = 1_000_000;
-const HEADING = { name: 'cube20.stl', subtitle: 'Bambu Lab H2S · 0.4 mm' };
 
-function view(model: Parameters<typeof JobScreen>[0]['model'], now = T0) {
+function view(model: Parameters<typeof JobPanel>[0]['model'], now = T0) {
   render(
-    <JobScreen
+    <JobPanel
       model={model}
-      progress={HEADING}
       now={now}
       onCancel={vi.fn()}
       onSliceAgain={vi.fn()}
-      onBack={vi.fn()}
+      onDismiss={vi.fn()}
       cancelling={false}
     />,
   );
@@ -70,7 +73,7 @@ const DONE_JOB: JobSummary = {
   error: null,
 };
 
-describe('JobScreen', () => {
+describe('JobPanel', () => {
   it('shows no percentage before the first real number', () => {
     const queued = reduceProgress(
       initialProgress(T0),

@@ -42,6 +42,48 @@ export interface BedView {
   centre: Vector3;
 }
 
+/** How much of the canvas the floating panels are covering, in CSS pixels. */
+export interface Insets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+/**
+ * How far back a perspective camera has to be for a sphere of `radius` to clear the part
+ * of the canvas that no panel is covering.
+ *
+ * The panels are *over* the canvas, not beside it, so a fit computed from the canvas is
+ * wrong by exactly the ratio the panels cover: on a 390 x 844 phone with the bottom sheet
+ * at half height the free rectangle is about 310 x 335, and a 256 mm plate fitted to
+ * 390 x 844 would have a third of itself underneath the dock. Each axis is scaled by that
+ * ratio and the further of the two wins.
+ *
+ * Both scenes use it, for the same reason `bed.ts` exists at all: two implementations of
+ * "how far away is far enough" would drift, and the drift would show up as the preview
+ * and the plate framing the same object differently.
+ */
+export function fitDistance(
+  camera: { fov: number },
+  canvas: { clientWidth: number; clientHeight: number },
+  insets: Insets,
+  radius: number,
+): number {
+  const width = canvas.clientWidth || 1;
+  const height = canvas.clientHeight || 1;
+  // 80px floors: a sheet dragged to full height leaves a sliver, and dividing by it would
+  // send the camera to the far plane.
+  const freeWidth = Math.max(80, width - insets.left - insets.right);
+  const freeHeight = Math.max(80, height - insets.top - insets.bottom);
+  const halfFov = Math.tan(((camera.fov / 2) * Math.PI) / 180);
+  const vertical = (radius / halfFov) * (height / freeHeight);
+  const horizontal = (radius / (halfFov * (width / height))) * (width / freeWidth);
+  // 8 % of air. An exact fit puts the plate's corners on the edge of the free rectangle,
+  // and the edge of the free rectangle is where the panels start.
+  return Math.max(vertical, horizontal) * 1.08;
+}
+
 /** Draw the machine's real plate: `printable_area`, `bed_exclude_area`, a 10 mm grid. */
 export function buildBed(bed: BedSpec): BedView | null {
   if (bed.printableArea.length < 3) return null;

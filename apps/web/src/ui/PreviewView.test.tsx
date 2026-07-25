@@ -1,5 +1,5 @@
 /**
- * The preview screen without a GPU.
+ * The preview view without a GPU.
  *
  * jsdom has no WebGL, so `PreviewScene`'s constructor throws and the screen takes its
  * "this browser cannot show 3D" path. That is exactly what makes this test useful: the
@@ -14,7 +14,15 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BedSpec } from '@orca-web/shared';
 import type { PreviewIndex } from '@orca-web/gcode';
-import { PreviewScreen } from './PreviewScreen.tsx';
+import { PreviewView } from './PreviewView.tsx';
+import type { Chrome } from './Workspace.tsx';
+
+/** The bits `App` normally supplies. None of them are what this file is about. */
+const CHROME: Chrome = { title: null, tabs: null };
+
+function view(bed: BedSpec | null) {
+  return render(<PreviewView jobId="job" bed={bed} onClose={vi.fn()} chrome={CHROME} />);
+}
 
 const BED: BedSpec = {
   printerModel: 'Bambu Lab X1 Carbon',
@@ -104,9 +112,9 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-describe('PreviewScreen', () => {
+describe('PreviewView', () => {
   it('spans the object layers, not the machine’s prime line', async () => {
-    render(<PreviewScreen jobId="job" bed={BED} onClose={vi.fn()} />);
+    view(BED);
     const slider = (await screen.findByTestId('preview-layer')) as HTMLInputElement;
     // Layer 0 is a 585 mm priming pass at a Z *above* layer 1 (SPEC deviation #20), so the
     // slider must not be able to land on it: `layers.z` only sorts from layer 1 on.
@@ -118,7 +126,7 @@ describe('PreviewScreen', () => {
   });
 
   it('steps one layer at a time, because a thumb on 390px cannot', async () => {
-    render(<PreviewScreen jobId="job" bed={BED} onClose={vi.fn()} />);
+    view(BED);
     const slider = (await screen.findByTestId('preview-layer')) as HTMLInputElement;
     fireEvent.click(screen.getByTestId('preview-layer-up'));
     expect(Number(slider.value)).toBe(22);
@@ -128,7 +136,7 @@ describe('PreviewScreen', () => {
   });
 
   it('reports a window rather than the model, and reaches the bottom without stalling', async () => {
-    render(<PreviewScreen jobId="job" bed={BED} onClose={vi.fn()} />);
+    view(BED);
     await screen.findByTestId('preview-layer');
     const stats = screen.getByTestId('preview-stats');
     expect(Number(stats.dataset.last) - Number(stats.dataset.first) + 1).toBe(20);
@@ -140,20 +148,20 @@ describe('PreviewScreen', () => {
   });
 
   it('shows the deviation-#15 offset it is applying', async () => {
-    render(<PreviewScreen jobId="job" bed={BED} onClose={vi.fn()} />);
+    view(BED);
     await screen.findByTestId('preview-stats');
     expect(screen.getByTestId('preview-stats').dataset.extruderOffset).toBe('0,2');
   });
 
   it('warns when there is no printer, because then the offset is unknown', async () => {
-    render(<PreviewScreen jobId="job" bed={null} onClose={vi.fn()} />);
+    view(null);
     await screen.findByTestId('preview-stats');
     expect(screen.getByTestId('preview-stats').dataset.extruderOffset).toBe('0,0');
     expect(screen.getByText(/toolpath may sit a couple of millimetres/i)).toBeTruthy();
   });
 
   it('lists the feature types the window contains, from the index alone', async () => {
-    render(<PreviewScreen jobId="job" bed={BED} onClose={vi.fn()} />);
+    view(BED);
     const legend = await screen.findByTestId('preview-legend');
     // `featureMask` is in the index, so the legend is right before a byte of segment data
     // has arrived — which is what makes it useful while scrubbing.
@@ -163,7 +171,7 @@ describe('PreviewScreen', () => {
   });
 
   it('offers both colour modes', async () => {
-    render(<PreviewScreen jobId="job" bed={BED} onClose={vi.fn()} />);
+    view(BED);
     await screen.findByTestId('preview-colour-feature');
     const byTool = screen.getByTestId('preview-colour-tool');
     fireEvent.click(byTool);
@@ -185,7 +193,7 @@ describe('PreviewScreen', () => {
           ),
       ),
     );
-    render(<PreviewScreen jobId="job" bed={BED} onClose={vi.fn()} />);
+    view(BED);
     expect(await screen.findByText('There is no job job.')).toBeTruthy();
   });
 });

@@ -1,23 +1,29 @@
 /**
- * The whole app: three screens (setup, plater, job) and four full-screen pickers.
+ * The whole app: one workspace, two stages, five full-screen sheets.
  *
- * There is no router and no state library on purpose. The scope is one flow — upload,
- * choose four things, arrange the plate, slice, download — and a phone shows one thing at
- * a time anyway. M4's plater slotted in as the third screen exactly as M3 predicted,
- * fed by the same `Selection`; nothing here had to become a route first.
+ * There is still no router and no state library. What changed in this milestone is the
+ * *shape*: instead of three screens that replace one another (setup → plater → job), there
+ * is one 3D viewport with everything floating over it, and a `Prepare` / `Preview` switch
+ * between the plate and the toolpath — the arrangement OrcaSlicer's desktop build and
+ * SimplyPrint's web slicer both use. `Workspace` owns that layout; this file owns the
+ * state, exactly as before, and hands the pieces down as slots.
  *
- * Two pieces of state that M4 added and that are worth finding quickly:
+ * Three pieces of state worth finding quickly:
  *
  *  - `plate` — what is on the build plate. It is the thing serialised into the job
  *    descriptor, so the positions the user set are the positions the engine is given
- *    (`state/plate.ts`).
- *  - `thumbnail` — a PNG of the plate, rendered from the WebGL view at the moment Slice
- *    is pressed and uploaded once the job succeeds. The slicer cannot make one (no
- *    display server, and `--min-save` omits the member entirely — SPEC deviation #5), so
- *    without this every printer shows an empty preview.
+ *    (`state/plate.ts`). Edits go through `usePlateEditor`, which owns the geometry cache
+ *    and keeps three.js out of the first bundle.
+ *  - `thumbnail` — a PNG of the plate, rendered from the WebGL view at the moment Slice is
+ *    pressed and uploaded once the job succeeds. The slicer cannot make one (no display
+ *    server, and `--min-save` omits the member entirely — SPEC deviation #5), so without
+ *    this every printer shows an empty preview.
+ *  - `stage` / `previewJob` — which of the two views is up. A slice no longer takes the
+ *    screen away: progress arrives in the dock while the plate stays visible, and the
+ *    finished toolpath is one tap away in the same viewport.
  */
 
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ApiError, JobEvent, ModelSummary } from '@orca-web/shared';
 import {
   defaultFilament,
@@ -39,6 +45,7 @@ import {
 import {
   buildDescriptor,
   isComplete,
+  missingStep,
   readPersisted,
   rehydrate,
   rehydratePresets,
@@ -65,40 +72,31 @@ import {
   type SettingsState,
 } from '../state/settings.ts';
 import { SettingsScreen } from './SettingsScreen.tsx';
-import { JobScreen, type PreviewState } from './JobScreen.tsx';
+import { JobPanel, type PreviewState } from './JobPanel.tsx';
 import { ModelPicker } from './ModelPicker.tsx';
 import { PresetPicker } from './PresetPicker.tsx';
 import { PrinterPicker } from './PrinterPicker.tsx';
-import { SetupScreen, type SheetName } from './SetupScreen.tsx';
+import { PrintPanel, type SheetName } from './PrintPanel.tsx';
+import { PrepareView } from './PrepareView.tsx';
+import { PreviewView } from './PreviewView.tsx';
+import { bedLabel } from './ObjectPanel.tsx';
+import { TitleBlock, type Chrome } from './Workspace.tsx';
 import { arrangePlate, loadBed, uploadPlateThumbnail } from '../api/plater.ts';
 import {
   EMPTY_PLATE,
   composedRotation,
-  fitProblems,
+  duplicateInstance,
   matrixOf,
+  removeInstance,
   toPlateSpec,
-  type Instance,
   type Plate,
 } from '../state/plate.ts';
-
-/**
- * three.js is ~600 kB and nothing before the plater needs it, so the renderer, the mesh
- * loaders and this screen are one lazily loaded chunk. Hard constraint #5 is about the
- * phone in someone's hand, and that includes what it has to download before the first
- * screen is usable.
- */
-const PlaterScreen = lazy(async () => ({
-  default: (await import('./PlaterScreen.tsx')).PlaterScreen,
-}));
-/** M5's G-code preview: the same three.js chunk, opened from a finished job. */
-const PreviewScreen = lazy(async () => ({
-  default: (await import('./PreviewScreen.tsx')).PreviewScreen,
-}));
-const plater = () => import('./PlaterScreen.tsx');
-const geometryModule = () => import('../three/geometry.ts');
-const sceneModule = () => import('../three/plater-scene.ts');
+import { geometryModule, usePlateEditor } from '../state/plate-editor.ts';
 import type { BedSpec, ResolvedSettings, UserPreset } from '@orca-web/shared';
-import { Button, ErrorNotice, Spinner } from './primitives.tsx';
+import { Button, ErrorNotice, Segmented, Spinner } from './primitives.tsx';
+
+/** The plate thumbnail's renderer. Same three.js chunk the stage loads, fetched on demand. */
+const sceneModule = () => import('../three/plater-scene.ts');
 
 interface PresetState {
   process: PresetOption[];
@@ -108,6 +106,8 @@ interface PresetState {
 }
 
 const NO_PRESETS: PresetState = { process: [], filament: [], loading: false, error: null };
+
+type Stage = 'prepare' | 'preview';
 
 /** `#preview=<jobId>` — the one deep link this app has, and M5's acceptance test uses it. */
 function previewJobFromHash(): string | null {
@@ -123,7 +123,7 @@ function previewJobFromHash(): string | null {
  * M6's settings, as one lazily-filled bundle.
  *
  * `schema` is 708 kB and `resolved` needs three preset names, so neither is fetched until
- * the settings sheet is opened for the first time — the setup screen must stay usable on
+ * the settings sheet is opened for the first time — the workspace must stay usable on
  * mobile data without either.
  */
 interface SettingsBundle {
@@ -133,12 +133,7 @@ interface SettingsBundle {
   error: ApiError | null;
 }
 
-const NO_SETTINGS: SettingsBundle = {
-  schema: null,
-  resolved: null,
-  loading: false,
-  error: null,
-};
+const NO_SETTINGS: SettingsBundle = { schema: null, resolved: null, loading: false, error: null };
 
 function storage(): Storage | undefined {
   try {
@@ -162,17 +157,17 @@ export function App() {
   const [bed, setBed] = useState<BedSpec | null>(null);
   const [bedError, setBedError] = useState<ApiError | null>(null);
   const [plate, setPlate] = useState<Plate>(EMPTY_PLATE);
-  const [showPlater, setShowPlater] = useState(false);
   const [addingModel, setAddingModel] = useState(false);
   const [preview, setPreview] = useState<PreviewState>('none');
   /**
-   * The job whose G-code preview is open (M5), or null.
+   * The job whose G-code preview is available, or null.
    *
    * Seeded from `#preview=<jobId>` so a preview is addressable: the acceptance test opens
    * one for a job it sliced earlier, and a user who reloads mid-scrub comes back to it
-   * rather than to the setup screen.
+   * rather than to an empty plate.
    */
   const [previewJob, setPreviewJob] = useState<string | null>(() => previewJobFromHash());
+  const [stage, setStage] = useState<Stage>(() => (previewJobFromHash() ? 'preview' : 'prepare'));
   const [cancelling, setCancelling] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [settings, setSettings] = useState<SettingsBundle>(NO_SETTINGS);
@@ -192,10 +187,11 @@ export function App() {
   /**
    * Guards the save-on-change effect below. Without it the effect fires once on mount
    * with the empty selection — before `GET /catalog` has resolved and rehydration has
-   * run — and overwrites the stored selection with nothing. Caught by the Chromium pass:
-   * a reload came back to "Choose a file" every time.
+   * run — and overwrites the stored selection with nothing.
    */
   const hydrated = useRef(false);
+
+  const editor = usePlateEditor({ plate, bed, onChange: setPlate });
 
   // -- start-up ------------------------------------------------------------
   // One `GET /catalog` for the whole session: 351 kB, static per OrcaSlicer version and
@@ -274,7 +270,7 @@ export function App() {
       },
       (error: unknown) => {
         if (cancelled) return;
-        // No bed means no plater; the descriptor falls back to letting the engine
+        // No bed means no plate; the descriptor falls back to letting the engine
         // arrange, which is exactly M3's behaviour.
         setBed(null);
         setBedError(asApiError(error));
@@ -296,52 +292,15 @@ export function App() {
    */
   const modelId = selection.model?.id ?? null;
   const modelName = selection.model?.filename ?? null;
+  const setOnly = editor.setOnly;
   useEffect(() => {
     if (modelId === null || modelName === null) {
       setPlate(EMPTY_PLATE);
       return;
     }
     if (bed === null) return;
-    let cancelled = false;
-    void (async () => {
-      const [{ loadGeometry, measure }, { makeInstance }] = await Promise.all([
-        geometryModule(),
-        plater(),
-      ]);
-      const geometry = await loadGeometry(modelId, modelName);
-      if (cancelled) return;
-      const box = measure(geometry, matrixOf({ rotation: [0, 0, 0], scale: 1 }));
-      setPlate((current) => {
-        if (current.instances.some((instance) => instance.modelId === modelId)) return current;
-        const instance = makeInstance(modelId, modelName, box, bed);
-        return { instances: [instance], selectedId: instance.id };
-      });
-    })().catch(() => {
-      if (!cancelled) setPlate(EMPTY_PLATE);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [modelId, modelName, bed]);
-
-  const addToPlate = useCallback(
-    async (model: ModelSummary) => {
-      const [{ loadGeometry, measure }, { makeInstance }] = await Promise.all([
-        geometryModule(),
-        plater(),
-      ]);
-      const geometry = await loadGeometry(model.id, model.filename);
-      const box = measure(geometry, matrixOf({ rotation: [0, 0, 0], scale: 1 }));
-      setPlate((current) => {
-        const instance = makeInstance(model.id, model.filename, box, bed);
-        // Offset so a second copy is visibly a second object rather than a collision.
-        const width = box.max[0] - box.min[0];
-        instance.x += current.instances.length * (Math.max(width, 10) + 5);
-        return { instances: [...current.instances, instance], selectedId: instance.id };
-      });
-    },
-    [bed],
-  );
+    void setOnly({ id: modelId, filename: modelName });
+  }, [modelId, modelName, bed, setOnly]);
 
   /**
    * Auto-arrange: the engine's packer, not ours (SPEC — delegate to `--arrange 1`).
@@ -351,6 +310,7 @@ export function App() {
    * instances by asking what centre that position implies, which keeps one convention in
    * the client instead of two.
    */
+  const remeasure = editor.remeasure;
   const runArrange = useCallback(async () => {
     const current = plateRef.current;
     const machine = selectedNozzle(selection);
@@ -360,27 +320,30 @@ export function App() {
     const response = await arrangePlate(
       { kind: 'machine', vendor: selection.printer.vendorId, name: machine.machinePresetName },
       { kind: 'process', vendor: selection.process.vendor, name: selection.process.name },
-      current.instances.map((instance) => {
-        const transform = matrixOf(instance);
-        return { model: { source: 'library' as const, id: instance.modelId }, transform };
+      current.instances.map((instance) => ({
+        model: { source: 'library' as const, id: instance.modelId },
+        transform: matrixOf(instance),
+      })),
+    );
+
+    // The engine may have turned the object as well as moved it; folding its rotation
+    // into the instance's own keeps the two in step. In practice 2.4.2's packer returns
+    // the identity here, so this is insurance rather than routine.
+    const placements = await Promise.all(
+      current.instances.map(async (instance, index) => {
+        const placed = response.instances[index];
+        if (!placed) return null;
+        const rotation = composedRotation(placed.rotation, instance);
+        return { id: instance.id, rotation, box: await remeasure(instance, rotation), placed };
       }),
     );
 
-    const { loadGeometry, measure } = await geometryModule();
-    const geometries = await Promise.all(
-      current.instances.map((instance) => loadGeometry(instance.modelId, instance.filename)),
-    );
     setPlate((plateNow) => ({
       ...plateNow,
-      instances: plateNow.instances.map((instance, index) => {
-        const placed = response.instances[index];
-        const geometry = geometries[index];
-        if (!placed || !geometry) return instance;
-        // The engine may have turned the object as well as moved it; folding its rotation
-        // into the instance's own keeps the two in step. In practice 2.4.2's packer
-        // returns the identity here, so this is insurance rather than routine.
-        const rotation = composedRotation(placed.rotation, instance);
-        const box = measure(geometry, matrixOf({ rotation, scale: instance.scale }));
+      instances: plateNow.instances.map((instance) => {
+        const update = placements.find((candidate) => candidate?.id === instance.id);
+        if (!update) return instance;
+        const { box, rotation, placed } = update;
         return {
           ...instance,
           rotation,
@@ -391,7 +354,7 @@ export function App() {
         };
       }),
     }));
-  }, [selection]);
+  }, [remeasure, selection]);
 
   // -- settings (M6) -------------------------------------------------------
   /** The three presets a slice would resolve — the base the settings diff is taken from. */
@@ -453,11 +416,7 @@ export function App() {
     async (name: string) => {
       setPresetError(null);
       try {
-        await saveUserPreset({
-          name,
-          overrides: overrides.overrides,
-          basedOn: presetRefs,
-        });
+        await saveUserPreset({ name, overrides: overrides.overrides, basedOn: presetRefs });
         setUserPresets(await loadUserPresets());
       } catch (error) {
         setPresetError(asApiError(error));
@@ -494,14 +453,18 @@ export function App() {
   // Following `#preview=<jobId>` while the app is already open is a same-document
   // navigation: nothing remounts, so without this the link silently does nothing.
   useEffect(() => {
-    const onHashChange = (): void => setPreviewJob(previewJobFromHash());
+    const onHashChange = (): void => {
+      const fromHash = previewJobFromHash();
+      setPreviewJob(fromHash);
+      setStage(fromHash ? 'preview' : 'prepare');
+    };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
 
   const closePreview = useCallback(() => {
     if (window.location.hash.startsWith('#preview=')) window.location.hash = '';
-    setPreviewJob(null);
+    setStage('prepare');
   }, []);
 
   // -- actions -------------------------------------------------------------
@@ -519,10 +482,24 @@ export function App() {
     [],
   );
 
+  /** Write the captured preview into the finished archive, then let the download appear. */
+  const attachThumbnail = useCallback((jobId: string) => {
+    const png = thumbnail.current;
+    if (!png) {
+      setPreview('none');
+      return;
+    }
+    setPreview('uploading');
+    uploadPlateThumbnail(jobId, png).then(
+      () => setPreview('done'),
+      // A failed rewrite costs a preview picture on the printer's screen and nothing
+      // else; the G-code in the archive is untouched either way.
+      () => setPreview('failed'),
+    );
+  }, []);
+
   /**
    * Submit the plate.
-   *
-   * Two things happen before the request that did not in M3:
    *
    *  1. the plate is serialised into the descriptor with `arrange: false` and real
    *     positions, so the slice lands where the screen said (`state/plate.ts`);
@@ -538,6 +515,7 @@ export function App() {
       setSubmitting(true);
       setNotice(null);
       setPreview('none');
+      setStage('prepare');
 
       const placed =
         currentPlate.instances.length > 0 ? toPlateSpec(currentPlate.instances) : undefined;
@@ -572,11 +550,15 @@ export function App() {
           setSubmitting(false);
           const started = initialProgress(Date.now());
           setJob({ id: created.id, model: { ...started, state: created.state } });
+          setPreviewJob(null);
           setNow(Date.now());
           unsubscribe.current?.();
           unsubscribe.current = subscribeToJob(created.id, {
             onEvent: (event: JobEvent) => {
-              if (event.type === 'done') attachThumbnail(event.jobId);
+              if (event.type === 'done') {
+                attachThumbnail(event.jobId);
+                setPreviewJob(event.jobId);
+              }
               setJob((state) =>
                 state && state.id === event.jobId
                   ? { ...state, model: reduceProgress(state.model, event, Date.now()) }
@@ -599,24 +581,8 @@ export function App() {
         },
       );
     },
-    [],
+    [attachThumbnail],
   );
-
-  /** Write the captured preview into the finished archive, then let the download appear. */
-  const attachThumbnail = useCallback((jobId: string) => {
-    const png = thumbnail.current;
-    if (!png) {
-      setPreview('none');
-      return;
-    }
-    setPreview('uploading');
-    uploadPlateThumbnail(jobId, png).then(
-      () => setPreview('done'),
-      // A failed rewrite costs a preview picture on the printer's screen and nothing
-      // else; the G-code in the archive is untouched either way.
-      () => setPreview('failed'),
-    );
-  }, []);
 
   const handleCancel = useCallback(() => {
     if (!job) return;
@@ -636,7 +602,7 @@ export function App() {
     );
   }, [job]);
 
-  const backToSetup = useCallback(() => {
+  const dismissJob = useCallback(() => {
     unsubscribe.current?.();
     unsubscribe.current = null;
     setJob(null);
@@ -650,44 +616,16 @@ export function App() {
     startJob(selection, plate, overrides);
   }, [overrides, plate, selection, startJob]);
 
-  /** What the setup screen's Plate row says underneath "N objects". */
-  const plateDetail = useMemo(() => {
-    if (plate.instances.length === 0) {
-      return bed === null ? 'The slicer will place it' : 'Preparing…';
-    }
-    const problems = fitProblems(plate.instances, bed);
-    if (problems.size > 0) {
-      return `${problems.size} object${problems.size === 1 ? '' : 's'} the slicer would reject`;
-    }
-    const selectedInstance = plate.instances[0] as Instance;
-    return plate.instances.length === 1
-      ? `at ${Math.round(selectedInstance.x)}, ${Math.round(selectedInstance.y)} mm`
-      : 'Tap to arrange';
-  }, [bed, plate.instances]);
-
-  /** What the setup screen's Settings row says underneath the count. */
+  /** What the Settings row says underneath the count. */
   const settingsDetail = useMemo(() => {
     const keys = Object.keys(overrides.overrides);
     if (keys.length === 0) return 'Change layer height, supports, infill…';
     const named = keys
       .slice(0, 3)
-      .map((key) => {
-        const option = settings.schema?.options[key];
-        return option === undefined ? key : (option.label ?? key);
-      })
+      .map((key) => settings.schema?.options[key]?.label ?? key)
       .join(', ');
     return keys.length > 3 ? `${named} +${keys.length - 3} more` : named;
   }, [overrides, settings.schema]);
-
-  const jobHeading = useMemo(() => {
-    const parts = [selection.printer?.name, selection.nozzle ? `${selection.nozzle} mm` : null]
-      .filter(Boolean)
-      .join(' · ');
-    return {
-      name: selection.model?.filename ?? 'Slice',
-      subtitle: [parts, selection.filament?.name].filter(Boolean).join(' · '),
-    };
-  }, [selection]);
 
   // -- render --------------------------------------------------------------
 
@@ -712,68 +650,113 @@ export function App() {
     );
   }
 
-  if (previewJob) {
-    return (
-      <Suspense fallback={<Spinner label="Loading the preview…" />}>
-        <PreviewScreen jobId={previewJob} bed={bed} onClose={closePreview} />
-      </Suspense>
-    );
-  }
+  const missing = missingStep(selection);
+  const active = job !== null && isActive(job.model);
+  const canPreview = previewJob !== null;
 
-  if (job) {
-    return (
-      <JobScreen
+  const chrome: Chrome = {
+    title: (
+      <TitleBlock
+        name={selection.model?.filename ?? 'OrcaSlicer Web'}
+        detail={plateSummary(plate, bed, selection.printer?.name ?? '', catalog.orcaVersion)}
+        detailTestId="plate-summary"
+      />
+    ),
+    tabs: (
+      <Segmented
+        compact
+        label="Workspace"
+        testIdPrefix="stage"
+        value={stage}
+        onChange={(next) => (next === 'preview' ? setStage('preview') : closePreview())}
+        options={[
+          { value: 'prepare', label: 'Prepare' },
+          { value: 'preview', label: 'Preview', disabled: !canPreview },
+        ]}
+      />
+    ),
+    status: job ? (
+      <p className="px-2 text-xs text-muted tabular-nums">
+        {active ? `${Math.round(job.model.percent)}%` : 'Done'}
+      </p>
+    ) : null,
+    jobPanel: job ? (
+      <JobPanel
         model={job.model}
-        progress={jobHeading}
         now={now}
         onCancel={handleCancel}
         onSliceAgain={sliceAgain}
-        onBack={backToSetup}
-        onPreview={() => setPreviewJob(job.id)}
+        onDismiss={dismissJob}
+        onPreview={previewJob ? () => setStage('preview') : undefined}
         cancelling={cancelling}
         preview={preview}
       />
-    );
-  }
-
-  return (
-    <>
-      <SetupScreen
+    ) : null,
+    printPanel: (
+      <PrintPanel
         catalog={catalog}
         selection={selection}
         onOpen={(name) => (name === 'settings' ? openSettings() : setSheet(name))}
         onNozzle={(variant) => setSelection((current) => withNozzle(current, variant))}
-        onSlice={() => startJob(selection, plate, overrides)}
-        onOpenPlater={() => setShowPlater(true)}
-        plateCount={plate.instances.length}
-        plateDetail={plateDetail}
-        submitting={submitting}
-        error={submitError}
-        onDismissError={() => setSubmitError(null)}
-        notice={notice}
         settingsCount={modifiedCount(overrides)}
         settingsDetail={settingsDetail}
       />
+    ),
+    action:
+      stage === 'preview' ? (
+        <Button variant="secondary" onClick={closePreview} testId="preview-back">
+          Back to the plate
+        </Button>
+      ) : (
+        <div className="space-y-2">
+          {submitError ? (
+            <ErrorNotice error={submitError} onRetry={() => setSubmitError(null)} />
+          ) : null}
+          {notice ? (
+            <p role="status" className="text-center text-xs text-muted">
+              {notice}
+            </p>
+          ) : null}
+          <Button
+            onClick={() => startJob(selection, plate, overrides)}
+            disabled={missing !== null || submitting || active}
+            testId="slice-button"
+          >
+            {submitting ? 'Sending…' : active ? 'Slicing…' : 'Slice'}
+          </Button>
+          {missing ? (
+            <p className="text-center text-xs text-muted" data-testid="missing-step">
+              {missing}
+            </p>
+          ) : null}
+        </div>
+      ),
+    // A new job raises the sheet on a phone: progress that arrives below the fold reads
+    // as nothing having happened.
+    revealSignal: job?.id ?? null,
+  };
 
-      {showPlater ? (
-        <Suspense fallback={<Spinner label="Loading the plate…" />}>
-          <PlaterScreen
-            plate={plate}
-            bed={bed}
-            bedError={bedError}
-            printerName={selection.printer?.name ?? ''}
-            onChange={setPlate}
-            onClose={() => setShowPlater(false)}
-            onAddModel={() => {
-              setAddingModel(true);
-              setSheet('model');
-            }}
-            onArrange={runArrange}
-            onSlice={() => startJob(selection, plate, overrides)}
-            slicing={submitting}
-          />
-        </Suspense>
-      ) : null}
+  return (
+    <>
+      {stage === 'preview' && previewJob ? (
+        <PreviewView jobId={previewJob} bed={bed} onClose={closePreview} chrome={chrome} />
+      ) : (
+        <PrepareView
+          plate={plate}
+          bed={bed}
+          bedError={bedError}
+          editor={editor}
+          onSelect={(id) => setPlate((current) => ({ ...current, selectedId: id }))}
+          onDuplicate={(id) => setPlate((current) => duplicateInstance(current, id))}
+          onDelete={(id) => setPlate((current) => removeInstance(current, id))}
+          onAddModel={() => {
+            setAddingModel(true);
+            setSheet('model');
+          }}
+          onArrange={runArrange}
+          chrome={chrome}
+        />
+      )}
 
       {sheet === 'model' ? (
         <ModelPicker
@@ -784,7 +767,7 @@ export function App() {
               // Adding to the plate, not replacing the job's model: the plate can hold
               // several different models, and the first one chosen still names the job.
               setAddingModel(false);
-              void addToPlate(model);
+              void editor.add(model);
               setSheet(null);
               return;
             }
@@ -803,11 +786,11 @@ export function App() {
         <PrinterPicker
           catalog={catalog}
           selectedId={selection.printer?.id ?? null}
-          onSelect={(printer) => {
+          onSelect={(chosen) => {
             // Changing the printer clears the presets below it — they belong to the old
             // machine and would be rejected on submit.
             persisted.current = null;
-            setSelection((current) => withPrinter(current, printer));
+            setSelection((current) => withPrinter(current, chosen));
             setSheet(null);
           }}
           onClose={() => setSheet(null)}
@@ -855,4 +838,21 @@ export function App() {
       ) : null}
     </>
   );
+}
+
+/**
+ * The line under the title: how many objects, on whose plate, how big that plate is.
+ *
+ * Falls back to the OrcaSlicer version before a printer is chosen, because at that point
+ * the only honest thing to say about the plate is which slicer will be doing the slicing.
+ */
+function plateSummary(
+  plate: Plate,
+  bed: BedSpec | null,
+  printerName: string,
+  orcaVersion: string,
+): string {
+  if (!bed) return `Slice on the server · OrcaSlicer ${orcaVersion}`;
+  const objects = plate.instances.length === 1 ? '1 object' : `${plate.instances.length} objects`;
+  return `${objects} · ${printerName} · ${bedLabel(bed)}`;
 }

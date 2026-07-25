@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      Hard constraint #5: mobile is the primary target. `viewport-fit=cover` plus the
+      safe-area padding in index.css keeps the bottom action bar clear of the iOS home
+      indicator; `user-scalable` is deliberately NOT disabled — pinch-zoom is an
+      accessibility feature, not a bug.
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b1016" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="description" content="Slice 3D models from your phone with OrcaSlicer." />
+    <title>OrcaSlicer Web</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>OrcaSlicer Web needs JavaScript to talk to the slice service.</noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

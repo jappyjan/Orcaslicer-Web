@@ -93,7 +93,11 @@ RUN set -eux; \
 # extractors' output, so a broken extractor should fail the build rather than produce an
 # image that slices silently wrong (see the `generate` stage).
 #
-# `apps/web` is not in the root solution (Vite/DOM config) and is not built here.
+# `apps/web` is not in the root solution (Vite uses bundler resolution and DOM libs), so
+# it is built separately by its own toolchain in the second RUN below — after the
+# solution, because it imports `@orca-web/shared` through the workspace symlink and needs
+# that package's `dist/` to exist. Its `build` script typechecks before it bundles, so a
+# type error in the client fails the image build too.
 # ---------------------------------------------------------------------------
 FROM base AS build
 COPY --from=node /opt/node /opt/node
@@ -108,6 +112,7 @@ WORKDIR /src
 COPY . .
 RUN npm ci --no-audit --no-fund
 RUN npx tsc --build tsconfig.json
+RUN npm run build -w @orca-web/web
 
 # ---------------------------------------------------------------------------
 # generate — run the M2 extractors, baking their artefacts into the image.
@@ -267,6 +272,11 @@ COPY --from=build --chown=orca:orca /src/packages/catalog/package.json /app/pack
 COPY --from=build --chown=orca:orca /src/packages/catalog/dist /app/packages/catalog/dist
 COPY --from=build --chown=orca:orca /src/apps/api/package.json /app/apps/api/package.json
 COPY --from=build --chown=orca:orca /src/apps/api/dist /app/apps/api/dist
+
+# The web client (M3), as static assets. There is no second web server in this stack:
+# `apps/api/src/http/static.ts` resolves this path relative to its own compiled location
+# (`/app/apps/api/dist/http` → `/app/apps/web/dist`), so this destination is load-bearing.
+COPY --from=build --chown=orca:orca /src/apps/web/dist /app/apps/web/dist
 
 # The generated config schema and profile catalog (M2), keyed on ORCA_VERSION.
 COPY --from=generate --chown=orca:orca /generated /generated

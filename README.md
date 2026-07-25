@@ -9,12 +9,15 @@ Read [`docs/SPEC.md`](docs/SPEC.md) before contributing. It is the authoritative
 mission, hard constraints, non-goals, settled stack decisions, and a reference section on
 how the OrcaSlicer CLI actually behaves.
 
-**Status: M2 complete.** The container, the smoke test, the slice service and the profile
-pipeline exist: `POST /jobs` with SSE progress, artefact downloads, cancellation, a
-concurrency-limited queue and guaranteed sandbox cleanup, plus `GET /catalog` over a
-config schema and a fully resolved profile catalog generated at image-build time. Every
-preset reaches the slicer flattened, which is the one thing that makes its output
-trustworthy (see "VERIFIED CLI deviations" #1 in the spec). No UI yet — that is M3.
+**Status: M3 complete.** There is a usable web app: open `http://localhost:8080` on a
+phone, upload an STL or 3MF, pick printer → nozzle → quality → filament from the 384-model
+catalog, slice with live progress, read time/grams/metres/layers and download both the
+`.gcode.3mf` project and the raw `.gcode`. Underneath it: `POST /jobs` with SSE progress,
+artefact downloads, cancellation, a concurrency-limited queue and guaranteed sandbox
+cleanup, plus `GET /catalog` over a config schema and a fully resolved profile catalog
+generated at image-build time. Every preset reaches the slicer flattened, which is the one
+thing that makes its output trustworthy (see "VERIFIED CLI deviations" #1 in the spec).
+No 3D view yet — the plater is M4 and the G-code preview is M5.
 
 Licensing: this project is AGPL-3.0-or-later and ships an unmodified AGPL OrcaSlicer
 binary. See [`AGPL-NOTICE.md`](AGPL-NOTICE.md).
@@ -44,8 +47,12 @@ docker compose build
 docker compose run --rm smoke        # slice a bundled 20mm cube, assert the artefacts
 docker compose run --rm help-check   # assert the CLI surface has not drifted
 docker compose run --rm integration  # M1 acceptance: three concurrent real slices
-docker compose up api                # the slice service on http://localhost:8080
+docker compose up api                # the web app + API on http://localhost:8080
 ```
+
+Open `http://localhost:8080` — or, from a phone on the same network, the host's LAN
+address. That is the whole app: the image contains the built frontend and Fastify serves
+it, so there is no second container and no web server to configure.
 
 ```bash
 # M2 acceptance: every process preset valid for a Bambu Lab H2S with a 0.4 nozzle
@@ -131,12 +138,49 @@ is stubbed and throws), `MODEL_LIBRARY_MAX_BYTES`.
 
 Design decisions behind the boundaries: [`docs/adr/`](docs/adr/).
 
+## The web app (M3)
+
+`apps/web` — React + Vite + Tailwind, built to static assets that the API serves from
+`/app/apps/web/dist`. One image, one process, same origin, no CORS.
+
+The whole flow is upload → printer → nozzle → quality → filament → slice → download, and
+it is shaped by hard constraint #5: **mobile is the primary target, not a responsive
+afterthought.** Concretely, and verified in Chromium at 390×844 with touch emulation:
+
+- Every interactive element is at least 48 px tall (the `tap` utility). Nothing in the
+  app responds to hover — a thumb cannot hover — and `apps/web/src/no-hover.test.ts`
+  fails the build if a `hover:` style or a bare `<button>` without `tap` appears.
+- Nothing overflows horizontally at 390 px. The one horizontally scrolling element (the
+  filament material chips) scrolls inside its own container.
+- **384 printer models** are a two-level drill-down — 64 brands by display name
+  (`BBL` → `Bambulab`), then that brand's printers — with a search box that abandons the
+  hierarchy and matches every model at once.
+- **392 filament presets** (1.3 MB for a Bambu H2S 0.4, because `OrcaFilamentLibrary` is
+  offered for every printer) are fetched once and filtered client-side, with the printer
+  vendor's own `defaultMaterials` pinned to the top, material chips (PLA/PETG/TPU/…) and
+  a search box. The resolved `config` of each preset is dropped immediately after
+  parsing; only the four fields the picker renders are retained.
+- The **progress UI never assumes a 0→100 ramp.** Measured on the pinned binary, a 20 mm
+  cube emits _two_ progress frames, the first at 70 % (SPEC deviation #10). So the bar is
+  indeterminate until a real number arrives, never goes backwards, and says "still
+  working" after a six-second gap instead of looking frozen. Engine warnings are shown as
+  they arrive and are kept on the results panel.
+- A model is uploaded once, to `POST /models`, and every job — including "Slice again" —
+  refers to it by its `sha256:` content id. Two slices of the same model cost exactly one
+  upload.
+
+```bash
+# dev: Vite on :5173 proxying /jobs, /models, /catalog and /healthz to the container
+docker compose up -d api
+npm run dev -w @orca-web/web
+```
+
 ## Working on the code
 
 ```bash
 npm install         # Node 22 required
-npm run check       # format check + lint + typecheck + unit tests
-npm test            # vitest, unit project (no slicer binary needed)
+npm run check       # format check + lint + typecheck (incl. apps/web) + unit tests
+npm test            # vitest: the `unit` and `web` (jsdom) projects; no slicer binary
 npm run test:integration   # the real-slice acceptance test, inside the container
 ```
 

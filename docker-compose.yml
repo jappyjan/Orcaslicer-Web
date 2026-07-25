@@ -1,6 +1,6 @@
 # OrcaSlicer Web — development / verification stack.
 #
-#   docker compose up api                     # the slice service on :8080
+#   docker compose up api                     # the web app + slice service on :8080
 #   docker compose run --rm smoke             # slice a bundled STL, assert the artefacts
 #   docker compose run --rm help-check        # assert the CLI surface has not drifted
 #   docker compose run --rm integration       # M1 acceptance: 3 concurrent REAL slices

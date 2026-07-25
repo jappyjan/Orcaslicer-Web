@@ -12,6 +12,7 @@
  *   GET    /catalog                   vendors → printer models → nozzle variants (?schema=1)
  *   GET    /catalog/presets           resolved process/filament presets for a printer
  *   GET    /healthz
+ *   GET    /*                         the built web client (M3) — see http/static.ts
  */
 
 import { createReadStream, createWriteStream } from 'node:fs';
@@ -32,6 +33,7 @@ import type { CatalogService } from '../catalog/service.js';
 import type { AppConfig } from '../config.js';
 import type { SlicerEngine } from '../engine/port.js';
 import { registerCatalogRoutes } from './catalog-routes.js';
+import { isApiPath, registerStatic, wantsHtml } from './static.js';
 import {
   BadRequestError,
   NotFoundError,
@@ -92,7 +94,23 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     void reply.status(failure.status).send(failure.body);
   });
 
-  app.setNotFoundHandler((_request, reply) => {
+  // The web client, when this build has one. Registered before the not-found handler so
+  // the handler knows whether an `index.html` fallback is available.
+  const site = await registerStatic(app, deps.config.webRoot);
+
+  app.setNotFoundHandler((request, reply) => {
+    // A single-page app owns its own routing: any GET that a browser navigates to and
+    // that the API does not own gets index.html, so a reload or a shared link works.
+    // Anything under an API prefix — and every fetch that did not ask for HTML — keeps
+    // the JSON error envelope the rest of the API uses.
+    if (site !== undefined && !isApiPath(request.url) && wantsHtml(request)) {
+      void reply
+        .status(200)
+        .type('text/html; charset=utf-8')
+        .header('cache-control', 'no-cache')
+        .send(createReadStream(site.indexPath));
+      return;
+    }
     void reply.status(404).send({
       error: { code: 'NOT_FOUND', message: 'No such endpoint.', retryable: false },
     });

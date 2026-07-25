@@ -1,0 +1,137 @@
+@import 'tailwindcss';
+
+/*
+ * Hard constraint #5 lives in this file as much as in the components.
+ *
+ *  - `--tap`: 48px, the minimum height of anything a thumb has to hit. The
+ *    verification pass asserts >= 44px on every interactive element at 390px.
+ *  - No pointer-hover styling appears anywhere in this app. A thumb cannot hover, so
+ *    such a state is at best invisible and at worst a hidden affordance. Press feedback
+ *    is `:active` only, and `apps/web/src/no-hover.test.ts` fails the build if one
+ *    creeps in — including from a comment like this one, hence the wording.
+ */
+
+@theme {
+  --color-ink: #0b1016;
+  --color-surface: #121924;
+  --color-surface-2: #1a2432;
+  --color-line: #2a3646;
+  --color-text: #e8eef6;
+  --color-muted: #93a3b8;
+  --color-accent: #38bdf8;
+  --color-accent-ink: #04202e;
+  --color-warn: #fbbf24;
+  --color-warn-ink: #2a1e02;
+  --color-danger: #f87171;
+  --color-ok: #4ade80;
+
+  --spacing-tap: 3rem;
+}
+
+@layer base {
+  html {
+    background: var(--color-ink);
+    color-scheme: dark;
+    /* iOS bumps font size on rotate without this. */
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-ink);
+    color: var(--color-text);
+    font-family:
+      ui-sans-serif,
+      system-ui,
+      -apple-system,
+      'Segoe UI',
+      Roboto,
+      'Helvetica Neue',
+      Arial,
+      sans-serif;
+    /*
+     * A 390px viewport has no room to spare: a single over-wide child would give the
+     * whole page a horizontal scrollbar. Long preset names are wrapped or truncated at
+     * the component level; this is the backstop, and the verification pass asserts
+     * scrollWidth <= clientWidth.
+     */
+    overflow-x: hidden;
+    overscroll-behavior-y: none;
+  }
+
+  * {
+    /* Tapping should never flash the platform's grey box; components own their own
+       :active feedback. */
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button,
+  input,
+  select {
+    font: inherit;
+    color: inherit;
+  }
+
+  /* Respect a user who has asked for less motion — the indeterminate progress bar and
+     the sheet transition are the only animated things here. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@utility tap {
+  min-height: var(--spacing-tap);
+  min-width: var(--spacing-tap);
+  touch-action: manipulation;
+}
+
+/* The indeterminate bar: used before the first numeric progress line arrives, and
+   whenever the engine has gone quiet (SPEC deviation #10 — the pipe emits ~9 lines for
+   a cube, starting around 35%). A static bar there reads as "crashed". */
+@keyframes indeterminate-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(340%);
+  }
+}
+
+@utility bar-indeterminate {
+  animation: indeterminate-sweep 1.4s ease-in-out infinite;
+}
+
+@keyframes soft-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@utility pulse-soft {
+  animation: soft-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes sheet-in {
+  from {
+    transform: translateY(1.5rem);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@utility sheet-in {
+  animation: sheet-in 0.18s ease-out;
+}

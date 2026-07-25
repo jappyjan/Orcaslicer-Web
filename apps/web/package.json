@@ -2,13 +2,29 @@
   "name": "@orca-web/web",
   "version": "0.0.0",
   "private": true,
-  "description": "Mobile-first React client (Vite + Tailwind + three.js), built to static assets served by the API",
+  "description": "Mobile-first React client (Vite + Tailwind), built to static assets served by the API",
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "scripts": {
-    "build": "echo \"[web] no build yet — M3 adds the Vite app\""
+    "dev": "vite",
+    "build": "tsc --noEmit -p tsconfig.json && vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "preview": "vite preview",
+    "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@orca-web/shared": "*"
+    "@orca-web/shared": "*",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.4",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.1.5"
   }
 }

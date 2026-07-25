@@ -24,8 +24,12 @@ parallel structure.
 │   │       ├── catalog/     #   start-up load + response/ETag caching for GET /catalog
 │   │       ├── storage/     #   SQLite metadata, content-addressed models, artefacts
 │   │       ├── jobs/        #   orchestration and the SSE event bus
-│   │       └── http/        #   Fastify routes and error mapping
-│   └── web/                 # @orca-web/web  — React + Vite + Tailwind + three.js (M3+)
+│   │       └── http/        #   Fastify routes, error mapping, static.ts serves the client
+│   └── web/                 # @orca-web/web  — React + Vite + Tailwind             (M3)
+│       └── src/
+│           ├── api/        #   the API client: error contract, catalog, jobs + SSE
+│           ├── state/      #   pure logic: progress model, selection → job descriptor
+│           └── ui/         #   one component per screen; primitives.tsx = touch vocabulary
 │
 ├── packages/
 │   ├── shared/              # @orca-web/shared  — types crossing the HTTP boundary
@@ -98,9 +102,10 @@ Node-oriented base config, so it carries its own compiler options and is checked
 own `build` script.
 
 **One root `vitest.config.ts`.** `npm test` at the root runs every workspace's unit
-tests in one process. Later milestones add project entries (jsdom for `apps/web`, a
-container-backed project for the M1 real-slice integration test) instead of competing
-config files.
+tests in one process. Milestones add project entries instead of competing config files:
+M1's container-backed `integration` project, and M3's jsdom `web` project (rooted at
+`apps/web`, the only one that loads a Vite plugin). `apps/web` is excluded from the
+`unit` project's globs rather than being allowed to run twice.
 
 **`scripts/` is not a workspace.** These are container entry points invoked by
 `docker compose run`, not npm packages — `smoke.sh` and `check-cli-help.sh`, and nothing

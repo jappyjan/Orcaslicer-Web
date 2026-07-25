@@ -40,6 +40,20 @@ export default tseslint.config(
     },
   },
   {
+    // The web client runs in a browser, not in Node: `window`, `fetch`, `EventSource`
+    // and `XMLHttpRequest` are the ambient globals here, and `process` is not.
+    files: ['apps/web/**/*.{ts,tsx}'],
+    languageOptions: {
+      globals: { ...globals.browser },
+      parserOptions: { ecmaFeatures: { jsx: true } },
+    },
+  },
+  {
+    // Vite's own config is the one file in apps/web that runs in Node.
+    files: ['apps/web/vite.config.ts'],
+    languageOptions: { globals: { ...globals.node } },
+  },
+  {
     // Plain-JS tooling scripts: no type-aware rules, and they are allowed to be
     // scrappy in ways the TypeScript sources are not.
     files: ['**/*.mjs', '**/*.js'],

@@ -5,6 +5,7 @@
 
 import { availableParallelism } from 'node:os';
 import { configSchemaPath, ORCA_VERSION, profileCatalogPath } from '@orca-web/catalog';
+import { defaultWebRoot } from './http/static.js';
 
 export type QueueDriver = 'memory' | 'bullmq';
 
@@ -26,6 +27,12 @@ export interface AppConfig {
   profileCatalogPath: string;
   /** The generated config schema, served with `GET /catalog?schema=1` and used by M6. */
   configSchemaPath: string;
+  /**
+   * The built web client (M3). One image, one process: the API serves `apps/web/dist` as
+   * static assets — there is no second web server. Absent in a checkout that has not run
+   * `npm run build -w @orca-web/web`, in which case the API serves its JSON routes alone.
+   */
+  webRoot: string;
   queueDriver: QueueDriver;
   redisUrl: string | undefined;
   /** Documented in ADR 0002. Slicing is CPU-bound, so this defaults from CPU count. */
@@ -83,6 +90,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     orcaVersion: version,
     profileCatalogPath: env.PROFILE_CATALOG_PATH ?? profileCatalogPath(version),
     configSchemaPath: env.CONFIG_SCHEMA_PATH ?? configSchemaPath(version),
+    webRoot: env.WEB_ROOT ?? defaultWebRoot(),
     queueDriver: driver,
     redisUrl: env.REDIS_URL,
     concurrency: num(env.SLICE_CONCURRENCY, defaultConcurrency()),

@@ -1,8 +1,8 @@
 /**
  * `@orca-web/extractors` — the M2 profile pipeline.
  *
- * Two build-time extractors keyed to the pinned OrcaSlicer version, plus a read-only
- * query API over what they generate.
+ * Two build-time extractors keyed to the pinned OrcaSlicer version. What they generate
+ * is read back by `@orca-web/catalog`.
  *
  *  1. **config schema** — parses `src/libslic3r/PrintConfig.cpp` of the pinned tag into
  *     `generated/<version>/config-schema.json`: label, tooltip, enum values *and their
@@ -15,28 +15,23 @@
  *     `profile-catalog.report.json` (the unresolved-inheritance report).
  *     → {@link buildProfileCatalog}
  *
- *  3. **query API** — vendors → printers → nozzle variants → compatible process and
- *     filament presets, with fully resolved values.
- *     → {@link openProfileCatalog}
+ * ## Reading the catalog at runtime — NOT from here
  *
- * ## Reading the catalog at runtime
+ * The query API lives in **`@orca-web/catalog`**, not in this package. `tools/*` are
+ * build-time programs and nothing in the request path may import them
+ * (docs/REPO-LAYOUT.md): this package parses C++ source, walks a 79 MB profile tree and
+ * fetches over the network, none of which belongs in a running server.
  *
  * ```ts
- * import { openProfileCatalog } from '@orca-web/extractors';
- *
- * const catalog = openProfileCatalog({ includeSchema: true });   // once, at start-up
- * catalog.toCatalogResponse({ includeSchema: true });            // GET /catalog body
- * catalog.processPresetsFor({ model: 'Bambu Lab H2S', nozzle: 0.4 });
- * catalog.flattenForSlicer(presetId);                            // -> --load-settings
+ * import { openProfileCatalog } from '@orca-web/catalog';
  * ```
  *
- * `openProfileCatalog` and everything it returns are pure data access over the
- * generated JSON: no network, no C++ parsing, no directory walking. The build-time
- * halves (`buildConfigSchema`, `buildProfileCatalog`) are the parts that must never be
- * called from the request path.
+ * The read-side surface is re-exported below purely so build-time code (the CLI, the
+ * tests) has one import to reach for. `buildConfigSchema` and `buildProfileCatalog` are
+ * the parts that must never be called from the request path.
  *
- * **`scripts/resolve-profile.mjs` (the M0 stopgap) is superseded by
- * `ProfileCatalogQuery.flattenForSlicer` and by the lower-level {@link mergeChain} /
+ * **`scripts/resolve-profile.mjs` and `scripts/flatten-preset.mjs` are both superseded
+ * by `ProfileCatalogQuery.flattenForSlicer` and by the lower-level {@link mergeChain} /
  * {@link resolveInheritance} that build the catalog.**
  */
 
@@ -44,18 +39,8 @@ export const EXTRACTOR_TARGETS = ['config-schema', 'profile-catalog'] as const;
 
 export type ExtractorTarget = (typeof EXTRACTOR_TARGETS)[number];
 
-export * from './types.js';
-
-export {
-  ORCA_VERSION,
-  catalogReportPath,
-  configSchemaPath,
-  generatedRoot,
-  profileCatalogPath,
-  profilesRoot,
-  upstreamCacheDir,
-  versionedGeneratedDir,
-} from './paths.js';
+// --- read time (re-exported from @orca-web/catalog) --------------------------
+export * from '@orca-web/catalog';
 
 // --- build time -------------------------------------------------------------
 export { buildConfigSchema, type BuildSchemaOptions } from './config-schema/build-config-schema.js';
@@ -71,9 +56,7 @@ export {
 export { buildProfileCatalog, type BuildCatalogOptions } from './profile-catalog/build-catalog.js';
 export {
   loadProfiles,
-  presetId,
   SHARED_FILAMENT_VENDOR,
-  STRUCTURAL_KEYS,
   type LoadedProfiles,
   type RawPreset,
 } from './profile-catalog/load-profiles.js';
@@ -89,14 +72,3 @@ export {
   type ConditionResult,
   type ConfigLookup,
 } from './profile-catalog/compatibility.js';
-
-// --- read time --------------------------------------------------------------
-export {
-  openProfileCatalog,
-  ProfileCatalogQuery,
-  type CatalogResponse,
-  type OpenCatalogOptions,
-  type PresetQueryOptions,
-  type PrinterSelector,
-  type ResolvedPresetView,
-} from './catalog-query.js';

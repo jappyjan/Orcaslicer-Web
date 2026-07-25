@@ -85,11 +85,15 @@ RUN set -eux; \
     rm -rf "node-v${NODE_VERSION}-linux-x64.tar.xz" /opt/node/share /opt/node/lib/node_modules/npm/docs
 
 # ---------------------------------------------------------------------------
-# build — compile the TypeScript API and resolve production dependencies.
+# build — compile every TypeScript workspace in the root solution.
 #
-# Deliberately builds ONLY `apps/api` (and, through project references,
-# `packages/shared`). The root solution also references `tools/extractors`, which is
-# build-time-only tooling whose state must never be able to break the runtime image.
+# `tools/extractors` is built here too, because the `generate` stage below runs it. That
+# is a deliberate change from M0/M1, where only `apps/api` was compiled to keep
+# build-time tooling from breaking the runtime image: the image now *needs* the
+# extractors' output, so a broken extractor should fail the build rather than produce an
+# image that slices silently wrong (see the `generate` stage).
+#
+# `apps/web` is not in the root solution (Vite/DOM config) and is not built here.
 # ---------------------------------------------------------------------------
 FROM base AS build
 COPY --from=node /opt/node /opt/node
@@ -103,9 +107,45 @@ ENV PATH=/opt/node/bin:$PATH \
 WORKDIR /src
 COPY . .
 RUN npm ci --no-audit --no-fund
-RUN npx tsc --build apps/api/tsconfig.json
-# Prune to runtime dependencies. Workspace symlinks survive, so the layout copied into
-# the runtime stage below must keep the same relative shape.
+RUN npx tsc --build tsconfig.json
+
+# ---------------------------------------------------------------------------
+# generate — run the M2 extractors, baking their artefacts into the image.
+#
+# WHY AT BUILD TIME: the running container then needs no network and no start-up work
+# beyond one 26 MB `JSON.parse`. It also makes the artefacts and the binary provably the
+# same OrcaSlicer release — both are keyed on ARG ORCA_VERSION.
+#
+# Two inputs, from two places:
+#
+#   * `resources/profiles` comes from the pinned AppImage that the `orca` stage already
+#     extracted. Nothing is downloaded for it.
+#   * `src/libslic3r/PrintConfig.cpp` and three sibling headers are fetched from
+#     raw.githubusercontent.com at the pinned tag and verified against the SHA-256 pins
+#     in `tools/extractors/src/upstream/sources.ts`. A checksum mismatch is a hard
+#     failure — never a silent fallback to a mirror. (GitHub's tarball/codeload
+#     endpoints are 403 under some egress policies; raw.githubusercontent.com is the
+#     canonical origin and the only one this build needs.)
+#
+# The extractor exits non-zero if any option upstream defines was not extracted, or if
+# any preset's `inherits` chain failed to resolve — which is exactly the condition that
+# would make the CLI slice silently wrong (SPEC "VERIFIED CLI deviations" #1).
+# ---------------------------------------------------------------------------
+FROM build AS generate
+ARG ORCA_VERSION
+COPY --from=orca /opt/orcaslicer/resources /opt/orcaslicer/resources
+ENV ORCA_VERSION=${ORCA_VERSION} \
+    ORCA_RESOURCES=/opt/orcaslicer/resources \
+    ORCA_GENERATED_DIR=/generated
+RUN node tools/extractors/dist/cli.js \
+ && rm -rf /generated/upstream \
+ && du -sh /generated /generated/${ORCA_VERSION}/*
+
+# ---------------------------------------------------------------------------
+# prune — the same tree, reduced to runtime dependencies. Workspace symlinks survive,
+# so the layout copied into the runtime stage must keep the same relative shape.
+# ---------------------------------------------------------------------------
+FROM build AS prune
 RUN npm ci --omit=dev --no-audit --no-fund
 
 # ---------------------------------------------------------------------------
@@ -190,6 +230,9 @@ RUN set -eux; \
 
 ENV ORCA_VERSION=${ORCA_VERSION} \
     ORCA_RESOURCES=/opt/orcaslicer/resources \
+    # Where the M2 extractors wrote the config schema and the profile catalog at image
+    # build time. `@orca-web/catalog` reads them from here; nothing regenerates at runtime.
+    ORCA_GENERATED_DIR=/generated \
     PATH=/opt/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     NODE_ENV=production \
     HOME=/home/orca \
@@ -213,13 +256,20 @@ COPY --chown=orca:orca scripts/ /app/scripts/
 COPY --chown=orca:orca test/ /app/test/
 
 # The compiled API. `node_modules` keeps its workspace symlinks, so the relative layout
-# (/app/node_modules, /app/apps/api, /app/packages/shared) must match the build stage.
-COPY --from=build --chown=orca:orca /src/node_modules /app/node_modules
+# (/app/node_modules, /app/apps/api, /app/packages/*) must match the build stage.
+# `tools/extractors` is deliberately NOT copied: it is build-time only, and
+# docs/REPO-LAYOUT.md forbids the request path from importing it. Its *output* is.
+COPY --from=prune --chown=orca:orca /src/node_modules /app/node_modules
 COPY --from=build --chown=orca:orca /src/package.json /app/package.json
 COPY --from=build --chown=orca:orca /src/packages/shared/package.json /app/packages/shared/package.json
 COPY --from=build --chown=orca:orca /src/packages/shared/dist /app/packages/shared/dist
+COPY --from=build --chown=orca:orca /src/packages/catalog/package.json /app/packages/catalog/package.json
+COPY --from=build --chown=orca:orca /src/packages/catalog/dist /app/packages/catalog/dist
 COPY --from=build --chown=orca:orca /src/apps/api/package.json /app/apps/api/package.json
 COPY --from=build --chown=orca:orca /src/apps/api/dist /app/apps/api/dist
+
+# The generated config schema and profile catalog (M2), keyed on ORCA_VERSION.
+COPY --from=generate --chown=orca:orca /generated /generated
 
 USER orca
 EXPOSE 8080

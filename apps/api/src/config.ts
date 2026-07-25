@@ -4,7 +4,7 @@
  */
 
 import { availableParallelism } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { configSchemaPath, ORCA_VERSION, profileCatalogPath } from '@orca-web/catalog';
 
 export type QueueDriver = 'memory' | 'bullmq';
 
@@ -17,8 +17,15 @@ export interface AppConfig {
   dataDir: string;
   orcaBinary: string;
   orcaResources: string;
-  /** M1 stopgap flattener; see profiles/port.ts for the seam M2 replaces. */
-  resolverScript: string;
+  /** Pinned OrcaSlicer release. Keys the generated artefacts and the catalog ETags. */
+  orcaVersion: string;
+  /**
+   * The generated profile catalog (M2). Produced at image-build time into
+   * `/generated/<version>/` and read once at start-up — see docs/PROFILE-PIPELINE.md.
+   */
+  profileCatalogPath: string;
+  /** The generated config schema, served with `GET /catalog?schema=1` and used by M6. */
+  configSchemaPath: string;
   queueDriver: QueueDriver;
   redisUrl: string | undefined;
   /** Documented in ADR 0002. Slicing is CPU-bound, so this defaults from CPU count. */
@@ -61,6 +68,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (driver !== 'memory' && driver !== 'bullmq') {
     throw new Error(`QUEUE_DRIVER must be "memory" or "bullmq", got "${env.QUEUE_DRIVER ?? ''}"`);
   }
+  // `ORCA_VERSION` is set by the runtime image from the Dockerfile's `ARG ORCA_VERSION`,
+  // so the artefacts the API reads can never belong to a different release than the
+  // binary it shells out to (hard constraint #2).
+  const version = env.ORCA_VERSION?.trim() || ORCA_VERSION;
 
   return {
     host: env.HOST ?? '0.0.0.0',
@@ -69,9 +80,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     dataDir: env.DATA_DIR ?? '/data',
     orcaBinary: env.ORCA_BIN ?? 'orca-slicer',
     orcaResources: env.ORCA_RESOURCES ?? '/opt/orcaslicer/resources',
-    resolverScript:
-      env.RESOLVE_PROFILE_SCRIPT ??
-      fileURLToPath(new URL('../../../scripts/resolve-profile.mjs', import.meta.url)),
+    orcaVersion: version,
+    profileCatalogPath: env.PROFILE_CATALOG_PATH ?? profileCatalogPath(version),
+    configSchemaPath: env.CONFIG_SCHEMA_PATH ?? configSchemaPath(version),
     queueDriver: driver,
     redisUrl: env.REDIS_URL,
     concurrency: num(env.SLICE_CONCURRENCY, defaultConcurrency()),

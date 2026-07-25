@@ -12,6 +12,7 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@orca-web/catalog": "*",
     "@orca-web/shared": "*",
     "@fastify/multipart": "^9.2.1",
     "fastify": "^5.6.1",

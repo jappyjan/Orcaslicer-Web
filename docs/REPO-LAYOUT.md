@@ -20,22 +20,23 @@ parallel structure.
 │   │   └── src/
 │   │       ├── engine/      #   the SlicerEngine port + orca/ adapter
 │   │       ├── queue/       #   the JobQueue port + in-process / bullmq adapters
-│   │       ├── profiles/    #   the ProfileResolver port + M1 stopgap (M2 replaces)
+│   │       ├── profiles/    #   the ProfileResolver port + the catalog-backed adapter
+│   │       ├── catalog/     #   start-up load + response/ETag caching for GET /catalog
 │   │       ├── storage/     #   SQLite metadata, content-addressed models, artefacts
 │   │       ├── jobs/        #   orchestration and the SSE event bus
 │   │       └── http/        #   Fastify routes and error mapping
 │   └── web/                 # @orca-web/web  — React + Vite + Tailwind + three.js (M3+)
 │
 ├── packages/
-│   └── shared/              # @orca-web/shared — types crossing the HTTP boundary
+│   ├── shared/              # @orca-web/shared  — types crossing the HTTP boundary
+│   └── catalog/             # @orca-web/catalog — READS the generated artefacts    (M2)
 │
 ├── tools/
-│   └── extractors/          # @orca-web/extractors — build-time only             (M2)
+│   └── extractors/          # @orca-web/extractors — WRITES them, build-time only (M2)
 │
-├── scripts/                 # shell/JS entry points run inside the container
+├── scripts/                 # shell entry points run inside the container
 │   ├── smoke.sh
-│   ├── check-cli-help.sh
-│   └── flatten-preset.mjs
+│   └── check-cli-help.sh
 │
 ├── test/
 │   ├── fixtures/            # committed test inputs (cube20.stl, 684 bytes)
@@ -54,21 +55,40 @@ parallel structure.
 
 **npm workspaces, three groups.** `apps/*` are deployables, `packages/*` are libraries
 consumed by them, `tools/*` are build-time-only programs whose output is data, not a
-running service. Keeping the M2 extractors in `tools/` rather than `packages/` makes it
-structurally obvious that nothing in the request path may import them: they parse C++
-source and a 79 MB profile tree, and their results are baked at build time and cached.
+running service. **Nothing in the request path may import `tools/*`.** That rule exists
+because those programs parse C++ source, walk a 79 MB profile tree and fetch over the
+network; none of that belongs in a running server, and keeping them in `tools/` makes
+the violation visible in an import statement rather than in a stack trace.
+
+**`packages/catalog` reads what `tools/extractors` writes.** M2 originally put the
+read-only query API next to the extractors. The API needs it at runtime — that is the
+whole point of `GET /catalog` — so leaving it there would have made `apps/api` import
+`tools/*` and break the rule above. The read side was therefore split into
+`@orca-web/catalog`: it holds the generated-artefact types, the `/generated` path
+scheme, the preset-id/structural-key contract, and `ProfileCatalogQuery`, and it does
+exactly one kind of I/O — `readFileSync` on an already-generated JSON file. The
+extractors depend on it (they write the shapes it defines); nothing depends on the
+extractors at runtime.
+
+Two consequences worth stating, because they are what the rule is actually protecting:
+
+- `apps/api` cannot accidentally acquire a C++ parser or a network fetch through a
+  transitive import. `@orca-web/catalog` has no dependencies at all.
+- The runtime image contains `packages/catalog/dist` and `/generated`, but not
+  `tools/extractors`. The Dockerfile enforces it by omission.
 
 **A single `packages/shared`, not one package per concept.** The API and the web client
-have to agree on job descriptors, progress events, artefact names and the profile
-catalog shape. One package with one entry point keeps the dependency graph a straight
-line (`shared -> api`, `shared -> web`) and avoids the version-skew games that appear
-the moment two internal packages depend on each other.
+have to agree on job descriptors, progress events, artefact names and preset references.
+One package with one entry point keeps the dependency graph a straight line
+(`shared -> api`, `shared -> web`) and avoids the version-skew games that appear the
+moment two internal packages depend on each other. `@orca-web/catalog` is a second
+package rather than part of `shared` because it is not just types: it carries the query
+implementation and reads files, and `apps/web` must not.
 
 **Both extractors in one `tools/extractors` package.** The config-schema extractor and
 the profile-catalog extractor both parse pinned upstream artefacts and both need the
 same "which OrcaSlicer version am I targeting" plumbing. Splitting them would duplicate
-that for no benefit. If one grows a heavy dependency the other does not need, split
-then.
+that for no benefit.
 
 **One root `tsconfig.base.json`, per-package `tsconfig.json` with project references.**
 `npm run typecheck` at the root is `tsc --build`, so incremental builds and cross-package
@@ -83,15 +103,15 @@ container-backed project for the M1 real-slice integration test) instead of comp
 config files.
 
 **`scripts/` is not a workspace.** These are container entry points invoked by
-`docker compose run`, not npm packages. They must keep working in an image that has no
-`node_modules` — the M0 image ships the slicer, Node and these scripts, and nothing else.
-M2 deleted the M0 stopgap `scripts/resolve-profile.mjs` (it resolved `inherits` only
-within a preset's own directory, which is wrong for 1939 of the 11 286 inheritance edges
-in 2.4.2) and replaced it with `scripts/flatten-preset.mjs`. The authoritative resolver
-now lives in `tools/extractors`; `flatten-preset.mjs` survives only as the container-side
-bootstrap for the smoke test, because the image still has no `node_modules` or compiled
-`dist/`. Once the image builds the Node workspaces, delete it and call
-`ProfileCatalogQuery.flattenForSlicer` instead.
+`docker compose run`, not npm packages — `smoke.sh` and `check-cli-help.sh`, and nothing
+else. Both preset flatteners that used to live here are gone: the M0 stopgap
+`resolve-profile.mjs` (it resolved `inherits` within a preset's own directory, wrong for
+1939 of the 11 286 edges in 2.4.2) and its interim successor `flatten-preset.mjs`. They
+existed only because the M0/M1 image shipped no `node_modules` and no compiled `dist/`.
+The image now builds the Node workspaces and bakes the generated catalog in, so
+`smoke.sh` calls `packages/catalog/dist/flatten-cli.js` — the same
+`ProfileCatalogQuery.flattenForSlicer` the API's `CatalogProfileResolver` uses. One
+resolver, tested once, exercised by both the smoke test and production.
 
 **Ports and adapters inside `apps/api/src`.** Each `*/port.ts` is an interface plus its
 error types and nothing else; adapters sit beside it and are selected in exactly one
@@ -110,6 +130,12 @@ sandbox per job and is emptied on every exit path plus at boot; `/data` holds th
 database, the content-addressed model library and published artefacts, and is the only
 thing that needs a volume. Artefacts are copied out of the sandbox into `/data` before
 cleanup, which is why a download still works a week after the slice.
+
+**…and a third that is neither: `/generated`.** The config schema and profile catalog,
+written by `tools/extractors` in the Dockerfile's `generate` stage and read once at
+start-up (`ORCA_GENERATED_DIR`). It is part of the image, not of the deployment: it
+never changes without the OrcaSlicer version changing, needs no volume, and is why the
+running container needs no network. 26 MB for 2.4.2.
 
 **`test/` at the root, not per-package.** `test/fixtures/cube20.stl` and
 `test/golden/orca-slicer-help.txt` describe the _container_, not any one workspace, and

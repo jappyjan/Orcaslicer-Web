@@ -25,6 +25,7 @@
     "extract": "npm run build && node --use-env-proxy dist/cli.js"
   },
   "dependencies": {
+    "@orca-web/catalog": "*",
     "@orca-web/shared": "*"
   }
 }

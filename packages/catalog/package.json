@@ -1,0 +1,26 @@
+{
+  "name": "@orca-web/catalog",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Read-only query API over the generated OrcaSlicer config schema and profile catalog",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "orca-flatten-preset": "./dist/flatten-cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean"
+  }
+}

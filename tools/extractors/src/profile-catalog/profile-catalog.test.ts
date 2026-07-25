@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { ProfileCatalogQuery } from '../catalog-query.js';
+import { ProfileCatalogQuery } from '@orca-web/catalog';
 import { buildProfileCatalog } from './build-catalog.js';
 import { configLookup, evaluateCondition } from './compatibility.js';
 import { loadProfiles } from './load-profiles.js';

@@ -73,6 +73,9 @@ services:
       WORK_DIR: /work
       ORCA_BIN: orca-slicer
       ORCA_RESOURCES: /opt/orcaslicer/resources
+      # The M2 artefacts baked into the image, NOT anything under the bind-mounted repo:
+      # the test must read what a deployed container would read.
+      ORCA_GENERATED_DIR: /generated
       XDG_RUNTIME_DIR: /tmp/xdg-orca
       LOG_LEVEL: warn
     volumes:

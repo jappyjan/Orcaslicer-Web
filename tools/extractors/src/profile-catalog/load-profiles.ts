@@ -21,10 +21,16 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
-import type { PresetType, UnresolvedPreset } from '../types.js';
+import {
+  presetId,
+  STRUCTURAL_KEYS,
+  type PresetType,
+  type UnresolvedPreset,
+} from '@orca-web/catalog';
 
-/** Keys that describe the inheritance relationship itself and must not survive flattening. */
-export const STRUCTURAL_KEYS = ['inherits', 'instantiation'] as const;
+// The id scheme and the structural-key list are the contract between what this loader
+// writes and what `@orca-web/catalog` reads back, so they are defined there, once.
+export { presetId, STRUCTURAL_KEYS };
 
 /** Vendor whose filaments are shared across vendors in Orca's UI. */
 export const SHARED_FILAMENT_VENDOR = 'OrcaFilamentLibrary';
@@ -70,10 +76,6 @@ export interface LoadedProfiles {
   machineModels: Map<string, RawMachineModel>;
   /** Files we could not turn into a preset. Feeds the unresolved report. */
   problems: UnresolvedPreset[];
-}
-
-export function presetId(vendor: string, type: string, name: string): string {
-  return `${vendor}/${type}/${name}`;
 }
 
 function toPosix(p: string): string {

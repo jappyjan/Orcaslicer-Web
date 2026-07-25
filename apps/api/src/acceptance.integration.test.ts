@@ -1,15 +1,21 @@
 /**
- * M1 ACCEPTANCE TEST — runs against the REAL OrcaSlicer binary.
+ * M1 + M2 ACCEPTANCE TEST — runs against the REAL OrcaSlicer binary and the REAL
+ * generated profile catalog baked into the image.
  *
  *   docker compose run --rm integration
  *
- * "Done when: an integration test slices three models concurrently, streams progress for
- * each, and leaves zero bytes behind in /work afterwards." (docs/SPEC.md)
+ * M1: "an integration test slices three models concurrently, streams progress for each,
+ * and leaves zero bytes behind in /work afterwards."
+ * M2: "the API can answer 'give me every process preset valid for a Bambu Lab H2S with a
+ * 0.4 nozzle' with fully resolved values, and a report lists any profiles whose
+ * inheritance failed to resolve." (docs/SPEC.md)
  *
- * The engine is deliberately NOT mocked here — the working agreement requires the suite
- * to contain at least one real slice, and a mocked acceptance test would prove nothing
- * about the CLI's actual behaviour, which is where every interesting bug in this project
- * lives.
+ * Neither the engine nor the profile resolver is mocked here — `createApp` is called
+ * with no overrides, so the presets travel through `CatalogProfileResolver` and the
+ * generated catalog exactly as they do in production. The working agreement requires the
+ * suite to contain at least one real slice, and a mocked acceptance test would prove
+ * nothing about the CLI's actual behaviour, which is where every interesting bug in this
+ * project lives.
  */
 
 import { execFile } from 'node:child_process';
@@ -18,6 +24,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import type { CatalogResponse, ResolvedPresetView } from '@orca-web/catalog';
 import type {
   CreateJobResponse,
   HealthResponse,
@@ -331,5 +338,96 @@ describe('M1 acceptance', () => {
     expect(body.engine.id).toBe('orca-cli');
     expect(body.engine.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(body.queue.driver).toBe('memory');
+    // The catalog resolver, not a stopgap, and the real artefact behind it.
+    expect(body.profiles.resolver).toBe('catalog');
+    expect(body.profiles.catalog?.presets).toBeGreaterThan(10_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M2 acceptance — over HTTP, against the generated catalog in the image
+// ---------------------------------------------------------------------------
+
+describe('M2 acceptance', () => {
+  it('answers "every process preset valid for a Bambu Lab H2S with a 0.4 nozzle"', async () => {
+    const response = await fetch(
+      `${baseUrl}/catalog/presets?type=process&model=${encodeURIComponent('Bambu Lab H2S')}&nozzle=0.4`,
+    );
+    expect(response.status).toBe(200);
+    const presets = (await response.json()) as ResolvedPresetView[];
+
+    expect(presets.map((preset) => preset.name)).toEqual([
+      '0.08mm High Quality @BBL H2S',
+      '0.12mm High Quality @BBL H2S',
+      '0.16mm High Quality @BBL H2S',
+      '0.16mm Standard @BBL H2S',
+      '0.20mm High Quality @BBL H2S',
+      '0.20mm Standard @BBL H2S',
+      '0.24mm Standard @BBL H2S',
+    ]);
+
+    for (const preset of presets) {
+      // "Fully resolved": a leaf process preset carries ~10 of its own keys; what comes
+      // back carries the whole chain. Anything less and the CLI would fill the gaps from
+      // its compiled-in defaults, silently (SPEC deviation #1).
+      expect(Object.keys(preset.config).length).toBeGreaterThanOrEqual(160);
+      expect(preset.config).not.toHaveProperty('inherits');
+      expect(preset.chain.length).toBeGreaterThan(1);
+      // The layer height in the preset's name really is the resolved value, not a label
+      // (upstream writes "0.08mm …" as `"0.08"` and "0.20mm …" as `"0.2"`).
+      expect(Number(preset.config.layer_height)).toBe(Number(preset.name.slice(0, 4)));
+    }
+
+    // Static per OrcaSlicer version, so it must be cacheable.
+    const etag = response.headers.get('etag') as string;
+    expect(etag).toBeTruthy();
+    const conditional = await fetch(response.url, { headers: { 'If-None-Match': etag } });
+    expect(conditional.status).toBe(304);
+
+    console.log(
+      `H2S 0.4 process presets: ${presets
+        .map((p) => `${p.name} (${Object.keys(p.config).length} keys)`)
+        .join(', ')}`,
+    );
+  });
+
+  it('serves the browsable index without the preset bodies, and the schema on request', async () => {
+    const index = await fetch(`${baseUrl}/catalog`);
+    expect(index.status).toBe(200);
+    const body = (await index.json()) as CatalogResponse;
+    expect(body.orcaVersion).toBe(process.env.ORCA_VERSION ?? '2.4.2');
+    expect(body.printerModels.length).toBeGreaterThan(100);
+    expect(body).not.toHaveProperty('configSchema');
+    // The acceptance artefact: nothing failed to resolve at build time.
+    expect(body.counts.resolved).toBe(body.counts.presets);
+
+    const h2s = body.printerModels.find((model) => model.name === 'Bambu Lab H2S');
+    expect(h2s?.nozzleVariants.map((variant) => variant.variant)).toEqual([
+      '0.2',
+      '0.4',
+      '0.6',
+      '0.8',
+    ]);
+
+    const withSchema = (await (
+      await fetch(`${baseUrl}/catalog?schema=1`)
+    ).json()) as CatalogResponse;
+    // 751 preset options in 2.4.2, every one PrintConfig.cpp defines — M6 renders these.
+    expect(Object.keys(withSchema.configSchema?.options ?? {}).length).toBeGreaterThan(700);
+    expect(withSchema.configSchema?.coverage.missing).toBe(0);
+  });
+
+  it('slices with a preset resolved through the catalog and reports a non-zero mass', async () => {
+    // The M0 failure mode in one assertion: an unflattened filament preset leaves
+    // filament_density at 0, so slice_info reports used_g="0.00" while the CLI exits 0.
+    const created = await submit(baseUrl, MODELS[0] as (typeof MODELS)[number]);
+    const job = await waitFor(baseUrl, created.id);
+    expect(job.state, JSON.stringify(job.error)).toBe('succeeded');
+    expect(job.stats?.weightGrams).toBeGreaterThan(0);
+    expect(job.stats?.plates[0]?.filaments[0]?.usedGrams).toBeGreaterThan(0);
+    console.log(
+      `catalog-resolved slice: ${job.stats?.weightGrams} g, ${job.stats?.totalMetres} m, ` +
+        `${job.stats?.layerCount} layers, ${job.stats?.predictionSeconds} s`,
+    );
   });
 });

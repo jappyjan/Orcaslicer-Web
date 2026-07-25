@@ -31,7 +31,7 @@
  * merging, matching how OrcaSlicer's preset system treats a full option value.
  */
 
-import type { UnresolvedPreset } from '../types.js';
+import type { UnresolvedPreset } from '@orca-web/catalog';
 import {
   presetId,
   SHARED_FILAMENT_VENDOR,

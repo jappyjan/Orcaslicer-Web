@@ -3,6 +3,7 @@
   "files": [],
   "references": [
     { "path": "./packages/shared" },
+    { "path": "./packages/catalog" },
     { "path": "./apps/api" },
     { "path": "./tools/extractors" }
   ]

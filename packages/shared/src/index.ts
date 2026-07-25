@@ -354,4 +354,18 @@ export interface HealthResponse {
   ok: boolean;
   engine: { id: string; version: string };
   queue: { driver: string; concurrency: number; queued: number; running: number };
+  /**
+   * Which `ProfileResolver` is wired in, and what the generated catalog behind it holds.
+   * `catalog` is `null` when the server started without the generated artefacts — the
+   * preset routes are then unavailable and slicing can only use an injected resolver.
+   */
+  profiles: {
+    resolver: string;
+    catalog: {
+      orcaVersion: string;
+      vendors: number;
+      printerModels: number;
+      presets: number;
+    } | null;
+  };
 }

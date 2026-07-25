@@ -9,13 +9,14 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
+import { type CatalogService, openCatalogService } from './catalog/service.js';
 import { type AppConfig, loadConfig } from './config.js';
 import { OrcaCliEngine } from './engine/orca/orca-cli-engine.js';
 import type { SlicerEngine } from './engine/port.js';
 import { JobEventBus } from './jobs/event-bus.js';
 import { JobService } from './jobs/job-service.js';
+import { CatalogProfileResolver } from './profiles/catalog-resolver.js';
 import type { ProfileResolver } from './profiles/port.js';
-import { StopgapProfileResolver } from './profiles/stopgap-resolver.js';
 import { createQueue } from './queue/create.js';
 import type { JobQueue } from './queue/port.js';
 import { purgeWorkRoot } from './sandbox.js';
@@ -29,7 +30,13 @@ export interface AppOverrides {
   config?: Partial<AppConfig>;
   /** Unit tests substitute a mock engine here; the acceptance test must not. */
   engine?: SlicerEngine;
+  /**
+   * Substituting a resolver also makes the generated catalog optional: unit tests run on
+   * a checkout that has never run the extractors. Without one, a missing catalog is a
+   * fatal boot error, because it would mean the image was built wrong.
+   */
   resolver?: ProfileResolver;
+  catalog?: CatalogService;
 }
 
 export interface App {
@@ -42,6 +49,8 @@ export interface App {
   events: JobEventBus;
   service: JobService;
   engine: SlicerEngine;
+  resolver: ProfileResolver;
+  catalog: CatalogService | undefined;
   db: Db;
   close(): Promise<void>;
 }
@@ -73,12 +82,16 @@ export async function createApp(overrides: AppOverrides = {}): Promise<App> {
         : { xdgRuntimeDir: process.env.XDG_RUNTIME_DIR }),
     });
 
+  // The generated profile catalog: M2's artefacts, baked into the image at build time.
+  // Loading it is the only expensive thing that happens at boot (~0.3 s for 26 MB) and
+  // it is what makes every preset the API hands the engine fully flattened — see
+  // docs/SPEC.md "VERIFIED CLI deviations" #1.
+  const catalog = overrides.catalog ?? openCatalog(config, overrides.resolver !== undefined);
+
   const resolver =
     overrides.resolver ??
-    new StopgapProfileResolver({
-      resourcesDir: config.orcaResources,
-      resolverScript: config.resolverScript,
-    });
+    // Unreachable: `openCatalog` only returns undefined when a resolver was supplied.
+    new CatalogProfileResolver((catalog as CatalogService).query);
 
   const interrupted = jobs.interruptStale();
 
@@ -113,7 +126,13 @@ export async function createApp(overrides: AppOverrides = {}): Promise<App> {
     artifacts,
     events,
     service,
+    resolver,
+    catalog,
   });
+
+  if (catalog === undefined) {
+    server.log.warn('started without the generated profile catalog; /catalog is unavailable');
+  }
 
   if (interrupted.length > 0) {
     server.log.warn({ jobs: interrupted }, 'marked jobs interrupted after restart');
@@ -150,6 +169,8 @@ export async function createApp(overrides: AppOverrides = {}): Promise<App> {
     events,
     service,
     engine,
+    resolver,
+    catalog,
     db,
     async close() {
       clearInterval(sweeper);
@@ -158,4 +179,22 @@ export async function createApp(overrides: AppOverrides = {}): Promise<App> {
       db.close();
     },
   };
+}
+
+/**
+ * Load the generated catalog, or explain loudly why the server cannot start.
+ *
+ * A built image always contains `/generated/<version>/`; if it does not, the extractor
+ * stage did not run and every slice would be handed unflattened presets. That is a
+ * silent-wrong-output failure (SPEC deviation #1), so it must be a boot failure instead.
+ * The one exception is a caller that supplied its own `ProfileResolver` — unit tests run
+ * on a checkout that has never produced the artefacts.
+ */
+function openCatalog(config: AppConfig, tolerateMissing: boolean): CatalogService | undefined {
+  try {
+    return openCatalogService(config);
+  } catch (error) {
+    if (!tolerateMissing) throw error;
+    return undefined;
+  }
 }

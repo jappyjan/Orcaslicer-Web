@@ -16,7 +16,7 @@
  */
 
 import { buildConfigSchema } from './config-schema/build-config-schema.js';
-import { ORCA_VERSION, profilesRoot } from './paths.js';
+import { ORCA_VERSION, profilesRoot } from '@orca-web/catalog';
 import { buildProfileCatalog } from './profile-catalog/build-catalog.js';
 
 const EXTRACTOR_TARGETS = ['config-schema', 'profile-catalog'] as const;

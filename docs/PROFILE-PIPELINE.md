@@ -1,8 +1,22 @@
 # M2 — the profile pipeline
 
-Two build-time extractors and a read-only query API, all in `tools/extractors`
-(`@orca-web/extractors`). Everything is keyed to the pinned OrcaSlicer version, so a
-version bump regenerates rather than drifts.
+Two build-time extractors in `tools/extractors` (`@orca-web/extractors`) and a read-only
+query API in `packages/catalog` (`@orca-web/catalog`). Everything is keyed to the pinned
+OrcaSlicer version, so a version bump regenerates rather than drifts.
+
+**The write/read split is load-bearing.** `docs/REPO-LAYOUT.md` forbids anything in the
+request path from importing `tools/*`, because those programs parse C++ source, walk a
+79 MB profile tree and fetch over the network. The API needs the catalog at runtime, so
+the read side lives in its own dependency-free package: `tools/extractors` _writes_ the
+artefacts, `packages/catalog` _reads_ them, `apps/api` imports only the latter.
+
+```
+tools/extractors ──writes──▶ /generated/<version>/*.json ──reads──▶ packages/catalog
+     (build time)                                                    │
+                                                                     ├─▶ apps/api  CatalogProfileResolver  → --load-settings
+                                                                     ├─▶ apps/api  GET /catalog, /catalog/presets
+                                                                     └─▶ smoke.sh  flatten-cli.js
+```
 
 ## Why this milestone exists
 
@@ -23,6 +37,14 @@ version bump regenerates rather than drifts.
 
 ## Running the extractors
 
+**In the image this is already done.** The Dockerfile's `generate` stage runs both
+extractors and bakes `/generated/<version>/` into the runtime image; `ORCA_GENERATED_DIR`
+points at it. Build-time generation is deliberate — the running container then needs no
+network, and the artefacts are provably the same OrcaSlicer release as the binary,
+because both come from `ARG ORCA_VERSION`. A failing extractor fails `docker build`.
+
+On a dev host:
+
 ```bash
 # both, into /generated/<version>/
 npm run -w @orca-web/extractors extract
@@ -35,21 +57,24 @@ npm run -w @orca-web/extractors extract -- profile-catalog
 Exit code is non-zero if any option defined upstream was not extracted, or if any
 preset's `inherits` chain failed to resolve.
 
-| env                  | default                     | meaning                                   |
-| -------------------- | --------------------------- | ----------------------------------------- |
-| `ORCA_VERSION`       | `2.4.2`                     | pinned release; the runtime image sets it |
-| `ORCA_RESOURCES`     | `/opt/orcaslicer/resources` | the slicer's `resources` dir              |
-| `ORCA_GENERATED_DIR` | `<repo>/generated`          | output root (gitignored)                  |
+| env                  | default                     | meaning                                             |
+| -------------------- | --------------------------- | --------------------------------------------------- |
+| `ORCA_VERSION`       | `2.4.2`                     | pinned release; the runtime image sets it           |
+| `ORCA_RESOURCES`     | `/opt/orcaslicer/resources` | the slicer's `resources` dir                        |
+| `ORCA_GENERATED_DIR` | `<repo>/generated`          | output root (gitignored); `/generated` in the image |
 
 Outputs (all gitignored, never hand-edited):
 
 ```
 generated/
   upstream/<version>/src/libslic3r/*        # verified upstream sources, cached
-  <version>/config-schema.json              # deliverable 1
-  <version>/profile-catalog.json            # deliverable 2
+  <version>/config-schema.json              # deliverable 1       472 kB
+  <version>/profile-catalog.json            # deliverable 2         26 MB
   <version>/profile-catalog.report.json     # the unresolved-inheritance report
 ```
+
+The image drops `upstream/` after generating — the sources are build inputs, not
+runtime data — and keeps the three artefacts, 26 MB in total.
 
 ### Getting the inputs
 
@@ -58,6 +83,11 @@ generated/
 origin; a jsDelivr mirror is listed as an availability fallback for environments whose
 egress policy blocks GitHub. Mirrors are untrusted — a checksum mismatch is a hard
 failure, never a fallback.
+
+Note for anyone reproducing the image build behind a restrictive egress policy:
+`raw.githubusercontent.com` is the only host this step needs, and it is the one that
+works. GitHub's tarball/codeload endpoints (`SOURCE_TARBALL_URL`) return 403 under some
+policies — do not switch the build to them.
 
 **`resources/profiles`** is not in the source pin: it comes from the pinned AppImage,
 which the Dockerfile already keeps in the image
@@ -145,10 +175,10 @@ that is exactly `OrcaFilamentLibrary` — and its filaments are offered for ever
 - `unevaluatedConditions` — compatibility expressions the evaluator did not understand.
 - `presetsWithNoCompatiblePrinter` — selectable presets that match no shipped printer.
 
-## Deliverable 3 — the query API
+## Deliverable 3 — the query API (`@orca-web/catalog`)
 
 ```ts
-import { openProfileCatalog } from '@orca-web/extractors';
+import { openProfileCatalog } from '@orca-web/catalog';
 
 const catalog = openProfileCatalog({ includeSchema: true }); // once, at start-up
 
@@ -164,28 +194,84 @@ catalog.flattenForSlicer(presetId); // -> write next to the job, pass to --load-
 
 `openProfileCatalog` and everything it returns are pure data access over the generated
 JSON — no network, no C++ parsing, no directory walking. The build-time halves
-(`buildConfigSchema`, `buildProfileCatalog`) are the parts that must never be called from
-the request path.
+(`buildConfigSchema`, `buildProfileCatalog`) live in `@orca-web/extractors` and are the
+parts that must never be called from the request path; the package boundary is what
+enforces it.
 
-### Wiring `GET /catalog`
+## Deliverable 4 — flattening presets for the CLI
 
-```ts
-// once, at server start-up
-const catalog = openProfileCatalog({ includeSchema: true });
+`ProfileCatalogQuery.flattenForSlicer(id)` returns the fully resolved preset with
+`inherits` and `instantiation` removed. Two callers, one implementation:
 
-// GET /catalog            -> vendors, printer models, nozzle variants (+ ?schema=1)
-reply.send(catalog.toCatalogResponse({ includeSchema: request.query.schema === '1' }));
+- **`apps/api/src/profiles/catalog-resolver.ts`** — `CatalogProfileResolver`, the
+  `ProfileResolver` adapter M1's port was designed for. Registered in `app.ts`; every
+  `POST /jobs` resolves its machine/process/filament refs through it, and the result is
+  what `--load-settings` / `--load-filaments` receive. It memoises per preset id, freezes
+  the values it hands out, and maps a missing preset to `ProfileNotFoundError` (404) and
+  anything else to `ProfileResolutionError` (400).
+- **`packages/catalog/src/flatten-cli.ts`** — the container-side entry point
+  `scripts/smoke.sh` uses. Same code path, so the smoke test proves the production
+  resolver rather than a shell-script lookalike.
 
-// GET /catalog/presets?type=process&model=Bambu%20Lab%20H2S&nozzle=0.4
-reply.send(
-  type === 'filament'
-    ? catalog.filamentPresetsFor({ model, nozzle })
-    : catalog.processPresetsFor({ model, nozzle }),
-);
-```
+`engine/orca/orca-cli-engine.ts` keeps two defensive assertions regardless: it refuses a
+profile that still carries `inherits`, and it fails a slice whose `slice_info.config`
+reports `used_g = 0`. That number is deviation #1's signature symptom — an unflattened
+filament preset leaves `filament_density` at 0 and the CLI still exits 0 — so it stays as
+a backstop even though the resolver should make it unreachable.
 
-`toCatalogResponse()` deliberately omits the 11 551 preset bodies (~350 kB without the
-schema, ~710 kB with it). Drill down with the preset queries.
+## HTTP surface
+
+Both routes are static per OrcaSlicer version, so both are served from a pre-serialised
+string with a strong ETag (`"<sha256 of version + query>"`),
+`Cache-Control: public, max-age=3600, stale-while-revalidate=604800`, and a 304 on
+`If-None-Match`. Loading and serialisation happen once, at start-up / first request —
+see `apps/api/src/catalog/service.ts`.
+
+### `GET /catalog[?schema=1]`
+
+`CatalogResponse`: `orcaVersion`, `generatedAt`, `counts`, `vendors[]`,
+`printerModels[]` (each with its `nozzleVariants[]`), plus `configSchema` when
+`?schema=1`. **351 kB, 708 kB with the schema** — it deliberately omits the 11 551 preset
+bodies. `counts.resolved === counts.presets` is the acceptance property: nothing failed
+to resolve at build time.
+
+### `GET /catalog/presets?type=process|filament&model=…&nozzle=…[&vendor=…]`
+
+`ResolvedPresetView[]`, ordered by name, abstract (`instantiation: false`) presets
+excluded. Each entry is `{ id, name, type, vendor, file, chain, instantiable, config }`
+where `config` is the **fully resolved** key/value map — for the H2S 0.4 process presets,
+166–167 keys each, and never an `inherits`.
+
+- `type` missing or not `process`/`filament` → `400 BAD_REQUEST`.
+- unknown `model` → `404 NOT_FOUND`, with near-matches in `hint`.
+- a `nozzle` the printer does not have → `404 NOT_FOUND`, with the real ones in `hint`.
+- artefacts missing (a broken build) → `503 ENVIRONMENT_ERROR`.
+
+`GET /healthz` reports which resolver is wired in and what the catalog holds, so
+"is this container serving the catalog?" is one request.
+
+### Notes for M3 — how the UI should drill down
+
+One `GET /catalog` at start-up gives the whole picker tree; everything after that is a
+preset query.
+
+1. **Printer.** `printerModels[]` is the flat list, each with `id`, `name`, `vendor` and
+   `nozzleVariants[]`. Group by `vendor` for display; `vendors[]` carries the display
+   name (`BBL` → `Bambulab`). 384 models in 2.4.2, so the list needs a search field.
+2. **Nozzle.** `model.nozzleVariants[]` — the variants that actually exist, which is not
+   always `advertisedNozzleDiameters`. Show `variant` (`"0.4"`, `"0.4HF"`); pass it back
+   verbatim as `nozzle`.
+3. **Process and filament.** Two calls to `/catalog/presets`, differing only in `type`.
+   Pass `vendor` too when two vendors ship a model of the same name.
+4. **Submitting.** `POST /jobs` wants `PresetRef`s (`{ kind, vendor, name }`), not ids —
+   split a `ResolvedPresetView.id` on `/`, or read `vendor` and `name` off the view
+   directly. The machine ref is `nozzleVariants[n].machinePresetName` with the model's
+   `vendor`.
+
+Sizes to design against: process lists are small (7 for the H2S 0.4), filament lists are
+not (392 presets, 1.3 MB, because `OrcaFilamentLibrary` is offered for every printer).
+Filter client-side after one fetch — it is cacheable and version-stable — rather than
+round-tripping per keystroke.
 
 ## Notes for M6 (generated settings UI)
 

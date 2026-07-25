@@ -9,6 +9,8 @@
  *   GET    /jobs/:id/artifacts        artefact list
  *   GET    /jobs/:id/artifacts/:name  download (.gcode.3mf and the raw .gcode)
  *   DELETE /jobs/:id                  cancel and clean up
+ *   GET    /catalog                   vendors → printer models → nozzle variants (?schema=1)
+ *   GET    /catalog/presets           resolved process/filament presets for a printer
  *   GET    /healthz
  */
 
@@ -26,8 +28,10 @@ import type {
   JobSummary,
   UploadModelsResponse,
 } from '@orca-web/shared';
+import type { CatalogService } from '../catalog/service.js';
 import type { AppConfig } from '../config.js';
 import type { SlicerEngine } from '../engine/port.js';
+import { registerCatalogRoutes } from './catalog-routes.js';
 import {
   BadRequestError,
   NotFoundError,
@@ -36,6 +40,7 @@ import {
   type UploadedModel,
 } from '../jobs/job-service.js';
 import type { JobEventBus } from '../jobs/event-bus.js';
+import type { ProfileResolver } from '../profiles/port.js';
 import type { JobQueue } from '../queue/port.js';
 import type { ArtifactStore } from '../storage/artifact-store.js';
 import type { JobStore } from '../storage/job-store.js';
@@ -51,6 +56,9 @@ export interface ServerDeps {
   artifacts: ArtifactStore;
   events: JobEventBus;
   service: JobService;
+  resolver: ProfileResolver;
+  /** Absent only when the generated artefacts could not be loaded; `/catalog` then 503s. */
+  catalog: CatalogService | undefined;
 }
 
 const SSE_HEARTBEAT_MS = 15_000;
@@ -92,8 +100,11 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
 
   // -------------------------------------------------------------------------
 
+  registerCatalogRoutes(app, deps.catalog);
+
   app.get('/healthz', async (): Promise<HealthResponse> => {
     const [info, stats] = await Promise.all([deps.engine.probe(), deps.queue.stats()]);
+    const counts = deps.catalog?.query.catalog.report.counts;
     return {
       ok: true,
       engine: { id: info.id, version: info.version },
@@ -102,6 +113,18 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
         concurrency: stats.concurrency,
         queued: stats.queued,
         running: stats.running,
+      },
+      profiles: {
+        resolver: deps.resolver.id,
+        catalog:
+          deps.catalog === undefined || counts === undefined
+            ? null
+            : {
+                orcaVersion: deps.catalog.orcaVersion,
+                vendors: counts.vendors,
+                printerModels: counts.printerModels,
+                presets: counts.presets,
+              },
       },
     };
   });

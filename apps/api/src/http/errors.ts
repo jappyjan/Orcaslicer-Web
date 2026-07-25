@@ -7,6 +7,7 @@
  */
 
 import type { ApiError, ApiErrorCode, SliceErrorCode } from '@orca-web/shared';
+import { CatalogUnavailableError, PrinterNotFoundError } from '../catalog/service.js';
 import { NotImplementedError, isSliceError } from '../engine/errors.js';
 import { BadRequestError, NotFoundError } from '../jobs/job-service.js';
 import { ProfileNotFoundError, ProfileResolutionError } from '../profiles/port.js';
@@ -68,6 +69,30 @@ export function toHttpFailure(cause: unknown): HttpFailure {
       status: 404,
       body: { error: error('NOT_FOUND', cause.message, false) },
       detail: undefined,
+    };
+  }
+  if (cause instanceof PrinterNotFoundError) {
+    return {
+      status: 404,
+      body: { error: error('NOT_FOUND', cause.message, false, cause.hint) },
+      detail: undefined,
+    };
+  }
+  if (cause instanceof CatalogUnavailableError) {
+    // The generated artefacts are baked into the image at build time, so this is a
+    // broken deployment rather than something the caller did — but it can be fixed
+    // without changing the request, hence retryable.
+    return {
+      status: 503,
+      body: {
+        error: error(
+          'ENVIRONMENT_ERROR',
+          'The preset catalog is not available on this server.',
+          true,
+          'The server was built without the generated profile catalog; ask the operator to rebuild the image.',
+        ),
+      },
+      detail: cause.message,
     };
   }
   if (cause instanceof ProfileResolutionError) {

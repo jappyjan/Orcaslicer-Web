@@ -33,7 +33,7 @@ import type {
   EnumChoice,
   SchemaGap,
   ValueKind,
-} from '../types.js';
+} from '@orca-web/catalog';
 import {
   findSections,
   LineIndex,

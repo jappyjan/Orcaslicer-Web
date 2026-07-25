@@ -6,9 +6,9 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import { configSchemaPath, ORCA_VERSION } from '../paths.js';
+import { configSchemaPath, ORCA_VERSION } from '@orca-web/catalog';
 import { fetchPinnedSources, type FetchedSource } from '../upstream/fetch-sources.js';
-import type { ConfigSchemaDocument, SchemaGap } from '../types.js';
+import type { ConfigSchemaDocument, SchemaGap } from '@orca-web/catalog';
 import {
   parseDefineConstants,
   parseMaterialTypes,

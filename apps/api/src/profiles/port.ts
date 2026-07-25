@@ -1,24 +1,19 @@
 /**
- * The `ProfileResolver` port — THE SEAM M2 REPLACES.
+ * The `ProfileResolver` port.
  *
  * Why it exists: the CLI does not resolve preset `inherits` chains and fails *silently*
  * when handed a raw preset (SPEC verified deviation #1 — 200×200 bed instead of
  * 256×256, `filament_density` 0 so the reported mass is 0.00 g, and exit 0 throughout).
- * So something must flatten presets before they reach an engine, and M1 needs that
- * something before M2's profile catalog exists.
+ * So something must flatten presets before they reach an engine.
+ *
+ * The shipped adapter is `CatalogProfileResolver` (`profiles/catalog-resolver.ts`),
+ * backed by M2's generated profile catalog. It is constructed in exactly one place,
+ * `app.ts`; no call site outside `profiles/` builds a resolver, and the only method the
+ * API uses is `resolve()`. M1 shipped a stopgap behind this same interface and its
+ * removal was a one-line change here — which is the property the port exists to buy.
  *
  * ────────────────────────────────────────────────────────────────────────────
- *  M2: to replace the stopgap, implement THIS interface and register it in
- *  `profiles/create.ts` under a new `PROFILE_RESOLVER` value. Nothing else changes:
- *  no call site outside `profiles/` constructs a resolver, and the only method the
- *  API uses is `resolve()`.
- *
- *    class CatalogProfileResolver implements ProfileResolver {
- *      readonly id = 'catalog';
- *      resolve(ref: PresetRef): Promise<ResolvedProfile> { ... }
- *    }
- *
- *  The contract the implementation must honour:
+ *  The contract any implementation must honour:
  *   - `values` is fully flattened: every key the preset chain sets is present, and
  *     `inherits` is absent. The engine adapter asserts this and refuses to slice
  *     otherwise.

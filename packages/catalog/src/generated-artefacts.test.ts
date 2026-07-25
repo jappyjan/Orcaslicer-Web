@@ -9,16 +9,22 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
-import { openProfileCatalog } from './catalog-query.js';
+import { openProfileCatalog, type ProfileCatalogQuery } from './catalog-query.js';
 import { catalogReportPath, configSchemaPath, ORCA_VERSION, profileCatalogPath } from './paths.js';
 import type { CatalogReport, ConfigSchemaDocument } from './types.js';
 
 const hasArtefacts = existsSync(profileCatalogPath()) && existsSync(configSchemaPath());
 
 describe.skipIf(!hasArtefacts)(`generated artefacts for OrcaSlicer ${ORCA_VERSION}`, () => {
-  const catalog = openProfileCatalog({ includeSchema: true });
+  // Opened in a hook, not in the suite body: vitest still evaluates the body of a
+  // skipped `describe` to collect its tests, so constructing here would fail the whole
+  // file on a machine that has not run the extractors.
+  let catalog: ProfileCatalogQuery;
+  beforeAll(() => {
+    catalog = openProfileCatalog({ includeSchema: true });
+  });
 
   it('resolved every inherits chain in the shipped profile tree', () => {
     const report = JSON.parse(readFileSync(catalogReportPath(), 'utf8')) as CatalogReport;

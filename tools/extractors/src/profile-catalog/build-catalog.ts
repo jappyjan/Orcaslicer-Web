@@ -15,7 +15,12 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import { catalogReportPath, ORCA_VERSION, profileCatalogPath, profilesRoot } from '../paths.js';
+import {
+  catalogReportPath,
+  ORCA_VERSION,
+  profileCatalogPath,
+  profilesRoot,
+} from '@orca-web/catalog';
 import type {
   CatalogNozzleVariant,
   CatalogPreset,
@@ -24,7 +29,7 @@ import type {
   CatalogVendor,
   PresetCompatibility,
   ProfileCatalog,
-} from '../types.js';
+} from '@orca-web/catalog';
 import { configLookup, evaluateCondition } from './compatibility.js';
 import { loadProfiles } from './load-profiles.js';
 import { mergeChain, resolveInheritance } from './resolve-inherits.js';

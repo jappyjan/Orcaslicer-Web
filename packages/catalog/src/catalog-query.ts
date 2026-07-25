@@ -6,13 +6,18 @@
  * `config-schema.json`) and answers questions about it, resolving `inherits` chains in
  * memory and memoising the result.
  *
+ * That purity is why it lives in `packages/catalog` and not in `tools/extractors`:
+ * `tools/*` are build-time programs and nothing in the request path may import them
+ * (docs/REPO-LAYOUT.md). The extractors *generate* these artefacts; this package
+ * *reads* them, and `apps/api` depends only on this half.
+ *
  * ## The acceptance question
  *
  * > give me every process preset valid for a **Bambu Lab H2S** with a **0.4 nozzle**,
  * > with fully resolved values
  *
  * ```ts
- * import { openProfileCatalog } from '@orca-web/extractors';
+ * import { openProfileCatalog } from '@orca-web/catalog';
  *
  * const catalog = openProfileCatalog();
  * const presets = catalog.processPresetsFor({ model: 'Bambu Lab H2S', nozzle: 0.4 });
@@ -21,17 +26,17 @@
  *
  * ## Handing a preset to the slicer
  *
- * {@link ProfileCatalogQuery.flattenForSlicer} is the replacement for the M0 stopgap
- * `scripts/resolve-profile.mjs`: it returns the fully flattened preset with the
- * structural keys removed, ready to be written next to the job and passed to
- * `--load-settings` / `--load-filaments`. Never pass a raw `resources/profiles` file —
- * see `docs/SPEC.md`, "VERIFIED CLI deviations" #1.
+ * {@link ProfileCatalogQuery.flattenForSlicer} is what the API's `CatalogProfileResolver`
+ * calls: it returns the fully flattened preset with the structural keys removed, ready
+ * to be written next to the job and passed to `--load-settings` / `--load-filaments`.
+ * Never pass a raw `resources/profiles` file — see `docs/SPEC.md`, "VERIFIED CLI
+ * deviations" #1.
  */
 
 import { readFileSync } from 'node:fs';
 
 import { configSchemaPath, ORCA_VERSION, profileCatalogPath } from './paths.js';
-import { STRUCTURAL_KEYS } from './profile-catalog/load-profiles.js';
+import { STRUCTURAL_KEYS } from './preset.js';
 import type {
   CatalogNozzleVariant,
   CatalogPreset,
@@ -93,7 +98,7 @@ export interface CatalogResponse {
   counts: CatalogReport['counts'];
   vendors: CatalogVendor[];
   printerModels: CatalogPrinterModel[];
-  /** Present when the caller asked for it; ~1.5 MB, so opt-in. */
+  /** Present when the caller asked for it; it roughly doubles the body, so opt-in. */
   configSchema?: ConfigSchemaDocument;
 }
 
@@ -226,9 +231,9 @@ export class ProfileCatalogQuery {
   /**
    * The flattened preset to hand to `orca-slicer --load-settings` / `--load-filaments`.
    *
-   * Replaces `scripts/resolve-profile.mjs`. `inherits` and `instantiation` are removed:
-   * a flattened copy must not point at a parent, because the CLI would look for it next
-   * to the copy and not find it.
+   * `inherits` and `instantiation` are removed: a flattened copy must not point at a
+   * parent, because the CLI would look for it next to the copy, not find it, and fall
+   * back to compiled-in defaults — silently, at exit 0.
    */
   flattenForSlicer(id: string): Record<string, unknown> {
     const config = { ...this.resolveConfig(id) };

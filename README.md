@@ -9,23 +9,26 @@ Read [`docs/SPEC.md`](docs/SPEC.md) before contributing. It is the authoritative
 mission, hard constraints, non-goals, settled stack decisions, and a reference section on
 how the OrcaSlicer CLI actually behaves.
 
-**Status: M1 complete.** The container, the slicing smoke test and the slice service
-exist: `POST /jobs`, SSE progress, artefact downloads, cancellation, a
-concurrency-limited queue and guaranteed sandbox cleanup. There is no profile catalog and
-no UI yet — those are M2 and M3. See the milestone list in the spec.
+**Status: M2 complete.** The container, the smoke test, the slice service and the profile
+pipeline exist: `POST /jobs` with SSE progress, artefact downloads, cancellation, a
+concurrency-limited queue and guaranteed sandbox cleanup, plus `GET /catalog` over a
+config schema and a fully resolved profile catalog generated at image-build time. Every
+preset reaches the slicer flattened, which is the one thing that makes its output
+trustworthy (see "VERIFIED CLI deviations" #1 in the spec). No UI yet — that is M3.
 
 Licensing: this project is AGPL-3.0-or-later and ships an unmodified AGPL OrcaSlicer
 binary. See [`AGPL-NOTICE.md`](AGPL-NOTICE.md).
 
 ## What is in the image
 
-|                |                                                                      |
-| -------------- | -------------------------------------------------------------------- |
-| OrcaSlicer     | **2.4.2**, official Linux AppImage, extracted (`--appimage-extract`) |
-| Exposed as     | `orca-slicer` on `PATH`                                              |
-| Node           | 22.22.2, official binary distribution                                |
-| Base           | `ubuntu:24.04` — matches what upstream builds the AppImage against   |
-| Display server | **none.** No GUI, no VNC, no Xvfb, no GPU.                           |
+|                |                                                                        |
+| -------------- | ---------------------------------------------------------------------- |
+| OrcaSlicer     | **2.4.2**, official Linux AppImage, extracted (`--appimage-extract`)   |
+| Exposed as     | `orca-slicer` on `PATH`                                                |
+| Node           | 22.22.2, official binary distribution                                  |
+| Base           | `ubuntu:24.04` — matches what upstream builds the AppImage against     |
+| Display server | **none.** No GUI, no VNC, no Xvfb, no GPU.                             |
+| `/generated`   | config schema + profile catalog for 2.4.2, 26 MB, built into the image |
 
 Thumbnail rendering (`Metadata/plate_N.png` inside the output archive) needs OpenGL and
 therefore does not work headless — the file is simply absent. That is expected; the plan
@@ -42,6 +45,12 @@ docker compose run --rm smoke        # slice a bundled 20mm cube, assert the art
 docker compose run --rm help-check   # assert the CLI surface has not drifted
 docker compose run --rm integration  # M1 acceptance: three concurrent real slices
 docker compose up api                # the slice service on http://localhost:8080
+```
+
+```bash
+# M2 acceptance: every process preset valid for a Bambu Lab H2S with a 0.4 nozzle
+curl -s 'http://localhost:8080/catalog/presets?type=process&model=Bambu%20Lab%20H2S&nozzle=0.4' \
+  | jq -r '.[] | "\(.name)  \(.config | length) resolved keys"'
 ```
 
 `smoke` is the M0 acceptance criterion. It slices `test/fixtures/cube20.stl` with stock
@@ -70,20 +79,22 @@ Drop into the image with the slicer on `PATH`:
 docker compose run --rm shell
 ```
 
-## The slice service (M1)
+## The slice service (M1) and the catalog (M2)
 
 `docker compose up api` starts it on `:8080`. Everything is JSON except the multipart
 upload and the artefact downloads.
 
-| Endpoint                        |                                                            |
-| ------------------------------- | ---------------------------------------------------------- |
-| `POST /jobs`                    | multipart: model files + a `descriptor` JSON field → `202` |
-| `GET /jobs/:id`                 | state, progress, warnings, stats, artefacts                |
-| `GET /jobs/:id/events`          | SSE: `state`, `progress`, `done`, `failed`                 |
-| `GET /jobs/:id/artifacts/:name` | `result.gcode.3mf` and `plate_N.gcode`                     |
-| `DELETE /jobs/:id`              | cancel and clean up → `204`                                |
-| `POST /models`                  | upload without slicing → content ids                       |
-| `GET /healthz`                  | engine version and queue depth                             |
+| Endpoint                        |                                                               |
+| ------------------------------- | ------------------------------------------------------------- |
+| `POST /jobs`                    | multipart: model files + a `descriptor` JSON field → `202`    |
+| `GET /jobs/:id`                 | state, progress, warnings, stats, artefacts                   |
+| `GET /jobs/:id/events`          | SSE: `state`, `progress`, `done`, `failed`                    |
+| `GET /jobs/:id/artifacts/:name` | `result.gcode.3mf` and `plate_N.gcode`                        |
+| `DELETE /jobs/:id`              | cancel and clean up → `204`                                   |
+| `POST /models`                  | upload without slicing → content ids                          |
+| `GET /catalog`                  | vendors → printer models → nozzle variants (`?schema=1`)      |
+| `GET /catalog/presets`          | `?type=process\|filament&model=…&nozzle=…` → resolved presets |
+| `GET /healthz`                  | engine and queue state, resolver, catalog counts              |
 
 ```bash
 curl -X POST localhost:8080/jobs \
@@ -93,6 +104,12 @@ curl -X POST localhost:8080/jobs \
                   "input":{"kind":"models","models":[{"source":"upload","filename":"cube20.stl"}]}}' \
   -F 'files=@test/fixtures/cube20.stl'
 ```
+
+The catalog is generated at image-build time and is static per OrcaSlicer version, so
+both catalog routes carry an ETag and answer `If-None-Match` with a 304. `GET /catalog`
+is 351 kB (708 kB with the schema) and deliberately omits the 11 551 preset bodies —
+drill down with `/catalog/presets`. Presets come back **fully resolved**: the CLI ignores
+`inherits` and fails silently if you do not do this for it.
 
 Uploads are stored content-addressed and persist, so re-slicing at different settings
 costs no upload: reuse the `models[].id` from the response with
@@ -175,16 +192,23 @@ The version is pinned in exactly one place and every check keys off it.
    docker compose run --rm --user "$(id -u):$(id -g)" help-check --update
    ```
 
-8. Regenerate anything derived from the pinned version (from M2 onward: the config
-   schema and the profile catalog).
+8. The config schema and the profile catalog regenerate themselves — `docker compose
+build` runs both extractors against the new binary's `resources/profiles` and the new
+   tag's `PrintConfig.cpp`. You must refresh the SHA-256 pins in
+   `tools/extractors/src/upstream/sources.ts` first, or the build fails on a checksum
+   mismatch (deliberately — see `docs/PROFILE-PIPELINE.md`):
+
+   ```bash
+   npm run -w @orca-web/extractors extract -- --refresh-checksums
+   ```
 
 Commit the `Dockerfile`, `packages/shared/src/index.ts`, `AGPL-NOTICE.md` and the
 refreshed golden together, so the pin is always self-consistent.
 
 ## Building behind a TLS-inspecting proxy
 
-If your network intercepts TLS, the image build cannot fetch the AppImage or the Node
-tarball. Drop the interception CA (PEM, `.crt` extension) into
+If your network intercepts TLS, the image build cannot fetch the AppImage, the Node
+tarball, or the pinned OrcaSlicer C++ sources the config-schema extractor reads. Drop the interception CA (PEM, `.crt` extension) into
 `docker/extra-ca-certificates/` and rebuild; the Dockerfile installs anything found
 there. The directory is empty and the step is a no-op otherwise, and `*.crt`/`*.pem`
 inside it are gitignored.

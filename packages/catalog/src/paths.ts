@@ -1,5 +1,6 @@
 /**
- * Where the extractors read from and write to.
+ * Where the generated artefacts live: written here by `tools/extractors` at image-build
+ * time, read here by this package at runtime. One definition, so the two cannot disagree.
  *
  * Everything is keyed by the pinned OrcaSlicer version so a version bump produces a
  * new tree rather than silently overwriting artefacts that no longer match the binary

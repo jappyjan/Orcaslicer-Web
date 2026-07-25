@@ -10,12 +10,13 @@ set -euo pipefail
 
 ORCA_BIN="${ORCA_BIN:-orca-slicer}"
 APP_DIR="${APP_DIR:-/app}"
-RESOURCES="${ORCA_RESOURCES:-/opt/orcaslicer/resources}"
-PROFILES="${RESOURCES}/profiles/BBL"
 MODEL="${SMOKE_MODEL:-${APP_DIR}/test/fixtures/cube20.stl}"
 WORK_ROOT="${WORK_DIR:-/work}"
+# The flattener the API itself uses, over the catalog generated at image-build time.
+FLATTEN="${APP_DIR}/packages/catalog/dist/flatten-cli.js"
 
 # A common, well-supported printer. 0.4 nozzle, stock 0.20mm process, stock PLA.
+PRESET_VENDOR="${SMOKE_VENDOR:-BBL}"
 MACHINE_PRESET="${SMOKE_MACHINE:-Bambu Lab X1 Carbon 0.4 nozzle}"
 PROCESS_PRESET="${SMOKE_PROCESS:-0.20mm Standard @BBL X1C}"
 FILAMENT_PRESET="${SMOKE_FILAMENT:-Bambu PLA Basic @BBL X1C}"
@@ -54,7 +55,7 @@ command -v "$ORCA_BIN" >/dev/null 2>&1 || fail "'${ORCA_BIN}' is not on PATH"
 command -v node >/dev/null 2>&1 || fail "node is not on PATH (needed by the profile resolver)"
 command -v unzip >/dev/null 2>&1 || fail "unzip is not on PATH"
 [ -f "$MODEL" ] || fail "test model not found at ${MODEL}"
-[ -d "$PROFILES" ] || fail "bundled profiles not found at ${PROFILES}"
+[ -f "$FLATTEN" ] || fail "the catalog flattener is not in the image at ${FLATTEN}"
 
 # Deliberately assert we are headless: this test exists to prove slicing needs no
 # display server, so if one leaks in the assertion is worthless.
@@ -75,26 +76,26 @@ mkdir -p "${SANDBOX}/profiles" "${SANDBOX}/out"
 # ---------------------------------------------------------------------------
 # Flatten the preset inheritance chains.
 #
-# GOTCHA (verified on 2.4.2, see scripts/flatten-preset.mjs): the CLI does not
-# resolve `inherits`. Handing it a stock resources/profiles JSON silently applies
-# only that file's own keys and falls back to compiled-in defaults for the rest —
-# you get a 200x200 bed and filament_density 0 (hence used_g = 0.00) instead of
-# the printer's real values. M2's profile catalog owns the production version of
-# this; here we prove the flattened path end to end.
+# GOTCHA (verified on 2.4.2, docs/SPEC.md "VERIFIED CLI deviations" #1): the CLI
+# does not resolve `inherits`. Handing it a stock resources/profiles JSON silently
+# applies only that file's own keys and falls back to compiled-in defaults for the
+# rest — you get a 200x200 bed and filament_density 0 (hence used_g = 0.00)
+# instead of the printer's real values, at exit 0.
 #
-# M2 replaced the M0 stopgap `resolve-profile.mjs` with `flatten-preset.mjs`, which
-# resolves `inherits` by name across the whole vendor sub-tree instead of only the
-# preset's own directory. Same CLI contract: <input.json> <output.json>.
+# This goes through M2's generated catalog, which is baked into the image at build
+# time — the SAME code path the API's CatalogProfileResolver uses, so the smoke
+# test proves the production resolver rather than a shell-script lookalike. The M0
+# stopgap `resolve-profile.mjs` and its interim successor `flatten-preset.mjs` are
+# both gone; they existed only while the image shipped no node_modules or dist/.
 # ---------------------------------------------------------------------------
 resolve() {
-  local src="$1" dst="$2" kind="$3"
-  [ -f "$src" ] || fail "${kind} preset not found: ${src}"
-  node "${APP_DIR}/scripts/flatten-preset.mjs" "$src" "$dst" \
-    || fail "could not resolve the inherits chain of ${kind} preset '${src}'"
+  local kind="$1" name="$2" dst="$3"
+  node "$FLATTEN" "$PRESET_VENDOR" "$kind" "$name" "$dst" \
+    || fail "could not resolve the inherits chain of ${kind} preset '${name}'"
 }
-resolve "${PROFILES}/machine/${MACHINE_PRESET}.json"   "${SANDBOX}/profiles/machine.json"  machine
-resolve "${PROFILES}/process/${PROCESS_PRESET}.json"   "${SANDBOX}/profiles/process.json"  process
-resolve "${PROFILES}/filament/${FILAMENT_PRESET}.json" "${SANDBOX}/profiles/filament.json" filament
+resolve machine  "$MACHINE_PRESET"  "${SANDBOX}/profiles/machine.json"
+resolve process  "$PROCESS_PRESET"  "${SANDBOX}/profiles/process.json"
+resolve filament "$FILAMENT_PRESET" "${SANDBOX}/profiles/filament.json"
 ok "resolved presets: ${MACHINE_PRESET} / ${PROCESS_PRESET} / ${FILAMENT_PRESET}"
 
 OUT_3MF="${SANDBOX}/out/smoke.gcode.3mf"

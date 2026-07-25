@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-import { upstreamCacheDir } from '../paths.js';
+import { upstreamCacheDir } from '@orca-web/catalog';
 import { pinnedSourcesFor, sourceUrlsFor, type UpstreamSource } from './sources.js';
 
 export interface FetchedSource {

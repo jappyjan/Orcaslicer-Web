@@ -264,8 +264,14 @@ touches the CLI.
    is load-bearing, not cosmetic**; this littered the repo root twice before
    `probe()` was pinned to a scratch directory.
 10. **The progress pipe usually omits `warning` entirely rather than sending
-    `null`**, and emits far fewer lines than you would expect — 9 for a cube,
-    starting around 35 %. Do not build UI that assumes a smooth 0→100 ramp.
+    `null`**, and emits far fewer lines than you would expect. **How few is not
+    stable**: M1 measured 9 frames for a cube starting around 35 %; M3
+    re-measured the same shape and got **2 frames, the first at 70 %**. Treat the
+    stream as *arbitrarily sparse and arbitrarily late* — that is the durable
+    lesson, and it is what the UI is built against. Never assume a smooth 0→100
+    ramp, and never treat a long silence as a stall. Note also that a plate
+    boundary can reset `plate_percent`, so percent must be clamped monotonic
+    before display.
 11. **admesh's ASCII/binary STL sniffing is fragile.** A byte > 127 must appear
     within 128 bytes of offset 80. A small box with zeroed normals fails with
     `CLI_DATA_FILE_ERROR` at 10 mm and 15 mm but loads fine at 19 mm and 20 mm.

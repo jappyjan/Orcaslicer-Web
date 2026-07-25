@@ -103,6 +103,12 @@ few pixels across. `float32` would be exact to ~0.01 µm and cost 12 bytes per r
 instead of 6 — a 33 % larger format to represent detail no display can show and no
 printer can print.
 
+**In practice the win is smaller than that, and SPEC deviation #25 says why:** the
+machine's 585 mm prime line is part of the toolpath, so its bounding box is nearly the
+plate's. Measured on the budget file — a 90 mm box — the grid spans 180 × 171 mm and the
+steps are **2.75 / 2.62 µm**, not 1.5. Still three orders of magnitude below the line being
+drawn, so nothing here changes; the argument is just weaker than it reads.
+
 Two consequences are worth stating because they show up in the code:
 
 - A degenerate axis (a single-layer print has zero Z extent) gets `scale = 0`. Dequantising
@@ -261,6 +267,63 @@ for (let layer = first; layer <= last; layer++) {
 
 `layerRange(index, first, last)` in `@orca-web/gcode` does the offset arithmetic if the
 client would rather import it than repeat it.
+
+## What the client does with it
+
+The three.js half lives in `apps/web/src/three/preview-*.ts` and
+`apps/web/src/state/preview.ts`. It is worth reading alongside this document because the
+format's choices only pay off if the client spends them:
+
+- **One `InstancedMesh` per layer**, sharing one unit-box geometry and one material, so a
+  twenty-layer window is twenty draw calls whatever it contains and a layer that scrolls out
+  is one `dispose()`. Colour is an _instance attribute_, which is why "by feature" and "by
+  tool" is 12 bytes rewritten per segment rather than a rebuild.
+- **The response buffer is never copied and never survives the build.** The two views over a
+  range response — `Uint16Array` stride 9, `Uint8Array` stride 18 — are read once into
+  instance matrices; what stays resident is 64 B of matrix + 12 B of colour + 2 B of
+  feature/tool per segment. That ~78 B against the 18 B on the wire is the whole reason the
+  client holds a window and not a model.
+- **The window is capped by segments and bytes, not by a layer count.** A layer of skirt and
+  a layer of dense infill are nothing alike on either axis, so `windowFor()` walks down from
+  the layer the user is pointing at and stops at whichever cap bites first.
+- **A shifting window fetches only the difference.** `missingRuns()` turns "the window moved
+  by one" into a one-layer range request; the throttle is 50 ms, so a drag loads about twenty
+  windows a second rather than sixty or one.
+- **`bounds` is not where the object is.** See SPEC deviation #25: the prime line runs the
+  width of the plate, so the camera frames the loaded layers instead.
+- **`extruder_offset` is added back** as a translation on the group holding the toolpath —
+  once, not per segment. SPEC deviation #15; without it every layer sits 2 mm from the object
+  it belongs to on a stock X1C.
+
+Measured in Chromium at 390 × 844, DPR 3, with V8 capped at 512 MB, against the 44 MB budget
+slice (`test/e2e/preview.mjs`):
+
+|                                            |                                          |
+| ------------------------------------------ | ---------------------------------------- |
+| default window (20 layers)                 | 614 KB fetched, 34 915 segments          |
+| its instance data                          | 2.6 MB in JS, and the same on the GPU    |
+| deepest window the UI allows               | 141 layers, 236 310 segments, 4.1 MB     |
+| that window's total footprint              | 6 MB heap + 35.2 MB of buffers           |
+| peak JS heap, whole session                | **8 MB** of a 512 MB cap                 |
+| time to a painted layer window             | 199 ms after the scene is built          |
+| frame time while dragging the layer slider | p50 **16.7 ms**, p90 767 ms              |
+| JavaScript during that drag                | **250 ms of 30.6 s** of main-thread work |
+
+Two caveats, both worth more than the numbers they qualify.
+
+**The frame times measure SwiftShader, not the client.** The container has no GPU, so
+Chromium rasterises a window's ~420 000 triangles on the same thread as the gesture. A
+separate probe orbited a default window for twenty frames: 17.58 s of main-thread time and
+**0.03 s** of JavaScript. The JavaScript row is the one that would move if this code
+regressed; what a real device's GPU does with the rest is not observable here and is not
+claimed.
+
+**`--max-old-space-size` does not bound the instance buffers.** A `Float32Array`'s backing
+store lives outside V8's old space, so the heap cap guards the failure the format exists to
+prevent — 1.5 M segments decoded into 1.5 M JavaScript objects, ~200 MB of old space — while
+what bounds the buffers is the window cap in `apps/web/src/state/preview.ts`. Hence the
+"total footprint" row: 41 MB for the deepest window the UI offers, against ~240 MB if the
+model were resident.
 
 ## Caching
 

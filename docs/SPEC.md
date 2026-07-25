@@ -350,6 +350,27 @@ touches the CLI.
     tool index and is exercised against the pseudo-tools of #21, but no real `T0`/`T1`
     output exists to test against yet.
 
+### Added in M5 (client) — measured while building the three.js preview
+
+25. **The prime line makes the toolpath's bounding box the size of the bed, not of the
+    object.** MEASURED on the 44 MB budget slice: a 90 mm box occupies x 83…173, y 83…173,
+    but the compiled index reports `bounds` x **45…225**, y **4…175** — the 585 mm priming
+    pass of #20 runs the full width of the plate at y = 4 before layer 1. Two consequences,
+    both hit while building the client: framing a camera on `bounds` zooms out to fit a line
+    nobody is looking at (the preview frames the loaded layers instead), and the quantisation
+    grid spans the prime line as well, so docs/GCODE-PREVIEW-FORMAT.md's "a 90 mm object gets
+    1.5 µm steps instead of 3.9" measured **2.75 / 2.62 µm** in practice. Nothing is broken —
+    that is still three orders of magnitude finer than the 0.42 mm line being drawn — but
+    anything that reads `bounds` as "where the object is" is wrong by most of a plate.
+26. **`extruder_offset` is confirmed from the other side.** #15 was measured by comparing
+    plate positions with G-code; M5 measures the same 2 mm the other way round. The preview's
+    drawn geometry, decoded independently from the compiled `.bin`, spans y 83.00…173.00 mm
+    where the G-code says y 81.21…170.79 — exactly `+2` plus the half line width a drawn
+    extrusion adds either side of the centreline. Without the correction the toolpath sits
+    **1.79 mm** from the object it belongs to, which is small enough to look like a rendering
+    artefact and is not one. `test/e2e/preview.mjs` asserts both the corrected value and the
+    uncorrected one, so removing the correction fails rather than merely looking slightly off.
+
 ### Environment notes for local development
 - The Docker daemon is not running at session start in the dev container; start it
   with `nohup dockerd &` (sandbox disabled).

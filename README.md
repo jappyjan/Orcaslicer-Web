@@ -9,15 +9,16 @@ Read [`docs/SPEC.md`](docs/SPEC.md) before contributing. It is the authoritative
 mission, hard constraints, non-goals, settled stack decisions, and a reference section on
 how the OrcaSlicer CLI actually behaves.
 
-**Status: M3 complete.** There is a usable web app: open `http://localhost:8080` on a
+**Status: M5 complete.** There is a usable web app: open `http://localhost:8080` on a
 phone, upload an STL or 3MF, pick printer → nozzle → quality → filament from the 384-model
-catalog, slice with live progress, read time/grams/metres/layers and download both the
-`.gcode.3mf` project and the raw `.gcode`. Underneath it: `POST /jobs` with SSE progress,
-artefact downloads, cancellation, a concurrency-limited queue and guaranteed sandbox
-cleanup, plus `GET /catalog` over a config schema and a fully resolved profile catalog
-generated at image-build time. Every preset reaches the slicer flattened, which is the one
-thing that makes its output trustworthy (see "VERIFIED CLI deviations" #1 in the spec).
-No 3D view yet — the plater is M4 and the G-code preview is M5.
+catalog, arrange the plate in a touch 3D view, slice with live progress, read
+time/grams/metres/layers, **step through the resulting toolpath layer by layer**, and
+download both the `.gcode.3mf` project and the raw `.gcode`. Underneath it: `POST /jobs`
+with SSE progress, artefact downloads, cancellation, a concurrency-limited queue and
+guaranteed sandbox cleanup, plus `GET /catalog` over a config schema and a fully resolved
+profile catalog generated at image-build time. Every preset reaches the slicer flattened,
+which is the one thing that makes its output trustworthy (see "VERIFIED CLI deviations" #1
+in the spec).
 
 Licensing: this project is AGPL-3.0-or-later and ships an unmodified AGPL OrcaSlicer
 binary. See [`AGPL-NOTICE.md`](AGPL-NOTICE.md).
@@ -252,6 +253,67 @@ screen was showing. Both objects land within **0.000 mm** of their on-screen pos
 0.35 mm tolerance — the tolerance exists for the half-line-width inset of the outer wall,
 not for placement error. It also asserts nothing overflows 390 px, every target is ≥ 44 px,
 and `Metadata/plate_1.png` is present and non-blank in the served archive.
+
+## The G-code preview (M5, client side)
+
+`apps/web/src/three/preview-*.ts` + `apps/web/src/state/preview.ts`. Press **Preview
+G-code** on a finished job — or open `#preview=<jobId>` directly, which is what the
+acceptance test does.
+
+The budget is the design: **a 40 MB G-code file must open on a 4 GB phone without crashing
+the tab**, and the layer slider must stay responsive while scrubbing.
+
+- **A layer window, never the model.** Two sliders: which layer you are looking at, and how
+  many layers below it to draw. A single "everything up to here" slider — what desktop
+  slicers offer — holds the whole model by the time it reaches the top. The window is
+  capped by _segments and bytes_, not by a layer count, because a layer of skirt and a
+  layer of dense infill are nothing alike on either axis.
+- **A window that shifts fetches only the difference.** Moving down one layer is one
+  one-layer `Range` request, not a fresh twenty-layer download; layers that scroll out are
+  disposed _before_ the next fetch, so the peak is one window and not two.
+- **One `InstancedMesh` per layer** — one draw call each — sharing a unit-box geometry and
+  one material. Colour is a per-instance attribute, so switching between colour-by-feature
+  and colour-by-tool rewrites 12 bytes per segment and rebuilds nothing.
+- **Nothing about the window is React state.** The controller lives outside the component
+  tree; a scrub is sixty window changes a second and would otherwise be sixty renders.
+  Building is time-sliced to 8 ms with a yield to `requestAnimationFrame`, and while a
+  window is moving the scene draws at 10 Hz rather than 60 — nobody sees a picture that is
+  replaced 16 ms later, and those frames belong to the gesture.
+- **`extruder_offset` is added back.** G-code coordinates are plate coordinates _minus_ it
+  (deviation #15); without the correction every toolpath sits 2 mm from the object it
+  belongs to on a stock X1C. Applied once, as a translation on the group holding the
+  toolpath.
+
+Acceptance, measured rather than eyeballed:
+
+```bash
+docker compose up -d api
+node test/e2e/budget-job.mjs             # once: slices the real budget model, prints an id
+node test/e2e/preview.mjs --job <id>     # 390x844, touch emulation, V8 capped at 512 MB
+```
+
+The budget model is a real slice — a 90 mm box at 0.1 mm layers and 25 % infill, **44.2 MB
+of G-code**, 899 object layers, 1 516 347 segments, 26.0 MiB of compiled preview — not a
+cube and not a synthetic buffer. It is never committed; it lives in the API's data volume
+as an ordinary job. Chromium is launched with `--js-flags=--max-old-space-size=512`, the
+generous end of what a renderer gets on a 4 GB Android phone, so "it did not crash" means
+something. Measured there, 24 checks green: **peak JS heap 8 MB**, a default window of
+614 KB and 34 915 segments, 199 ms to a painted window, and the deepest window the UI offers
+(141 layers, 236 310 segments) totalling **41 MB** of heap plus instance buffers — against
+~240 MB if the model were resident. Dragging the slider across all 900 layers and back gives
+a median frame of 16.7 ms and **250 ms of JavaScript out of 30.6 s of main-thread work**.
+
+That last split is the honest one. The container has no GPU, so SwiftShader rasterises every
+frame on the same thread as the gesture and the worst frames are that, not this code — the
+client's share is 0.8 %. What a real phone's GPU does with the other 99 % is not observable
+here and is not claimed. Note too that `--max-old-space-size` does not bound typed-array
+backing stores; the heap cap catches "decode 1.5 M segments into objects", and the window
+cap in `state/preview.ts` is what bounds the buffers.
+
+The test also decodes the same byte range itself and checks the drawn geometry equals the
+G-code plus `extruder_offset` — 1.79 mm adrift if the correction were dropped.
+
+Format, byte layout and the server half: [`docs/GCODE-PREVIEW-FORMAT.md`](docs/GCODE-PREVIEW-FORMAT.md).
 
 ## Working on the code
 

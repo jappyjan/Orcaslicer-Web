@@ -75,6 +75,10 @@ import {
 const PlaterScreen = lazy(async () => ({
   default: (await import('./PlaterScreen.tsx')).PlaterScreen,
 }));
+/** M5's G-code preview: the same three.js chunk, opened from a finished job. */
+const PreviewScreen = lazy(async () => ({
+  default: (await import('./PreviewScreen.tsx')).PreviewScreen,
+}));
 const plater = () => import('./PlaterScreen.tsx');
 const geometryModule = () => import('../three/geometry.ts');
 const sceneModule = () => import('../three/plater-scene.ts');
@@ -89,6 +93,16 @@ interface PresetState {
 }
 
 const NO_PRESETS: PresetState = { process: [], filament: [], loading: false, error: null };
+
+/** `#preview=<jobId>` — the one deep link this app has, and M5's acceptance test uses it. */
+function previewJobFromHash(): string | null {
+  try {
+    const match = /^#preview=([A-Za-z0-9_-]+)$/.exec(window.location.hash);
+    return match ? (match[1] as string) : null;
+  } catch {
+    return null;
+  }
+}
 
 function storage(): Storage | undefined {
   try {
@@ -115,6 +129,14 @@ export function App() {
   const [showPlater, setShowPlater] = useState(false);
   const [addingModel, setAddingModel] = useState(false);
   const [preview, setPreview] = useState<PreviewState>('none');
+  /**
+   * The job whose G-code preview is open (M5), or null.
+   *
+   * Seeded from `#preview=<jobId>` so a preview is addressable: the acceptance test opens
+   * one for a job it sliced earlier, and a user who reloads mid-scrub comes back to it
+   * rather than to the setup screen.
+   */
+  const [previewJob, setPreviewJob] = useState<string | null>(() => previewJobFromHash());
   const [cancelling, setCancelling] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
@@ -346,6 +368,19 @@ export function App() {
 
   useEffect(() => () => unsubscribe.current?.(), []);
 
+  // Following `#preview=<jobId>` while the app is already open is a same-document
+  // navigation: nothing remounts, so without this the link silently does nothing.
+  useEffect(() => {
+    const onHashChange = (): void => setPreviewJob(previewJobFromHash());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  const closePreview = useCallback(() => {
+    if (window.location.hash.startsWith('#preview=')) window.location.hash = '';
+    setPreviewJob(null);
+  }, []);
+
   // -- actions -------------------------------------------------------------
 
   const handleUpload = useCallback(
@@ -533,6 +568,14 @@ export function App() {
     );
   }
 
+  if (previewJob) {
+    return (
+      <Suspense fallback={<Spinner label="Loading the preview…" />}>
+        <PreviewScreen jobId={previewJob} bed={bed} onClose={closePreview} />
+      </Suspense>
+    );
+  }
+
   if (job) {
     return (
       <JobScreen
@@ -542,6 +585,7 @@ export function App() {
         onCancel={handleCancel}
         onSliceAgain={sliceAgain}
         onBack={backToSetup}
+        onPreview={() => setPreviewJob(job.id)}
         cancelling={cancelling}
         preview={preview}
       />

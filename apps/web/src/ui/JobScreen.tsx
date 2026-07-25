@@ -56,6 +56,7 @@ export function JobScreen({
   onCancel,
   onSliceAgain,
   onBack,
+  onPreview,
   cancelling,
   preview = 'none',
 }: {
@@ -65,6 +66,8 @@ export function JobScreen({
   onCancel: () => void;
   onSliceAgain: () => void;
   onBack: () => void;
+  /** Open M5's G-code preview. Absent when the job has no G-code to look at. */
+  onPreview?: () => void;
   cancelling: boolean;
   preview?: PreviewState;
 }) {
@@ -149,6 +152,11 @@ export function JobScreen({
           </Button>
         ) : (
           <>
+            {onPreview && model.job?.artifacts.some((artifact) => artifact.role === 'gcode') ? (
+              <Button variant="secondary" onClick={onPreview} testId="preview-button">
+                Preview G-code
+              </Button>
+            ) : null}
             <Button onClick={onSliceAgain} testId="slice-again-button">
               Slice again
             </Button>

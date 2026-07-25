@@ -21,12 +21,9 @@
 
 import {
   AmbientLight,
-  BufferGeometry,
   Color,
   DirectionalLight,
-  DoubleSide,
   EdgesGeometry,
-  Float32BufferAttribute,
   Group,
   LineBasicMaterial,
   LineSegments,
@@ -36,25 +33,21 @@ import {
   PerspectiveCamera,
   Raycaster,
   Scene,
-  ShapeGeometry,
-  Shape,
   Vector2,
   Vector3,
   WebGLRenderer,
 } from 'three';
+import type { BufferGeometry } from 'three';
 import type { BedSpec } from '@orca-web/shared';
 import type { FitProblem, Instance } from '../state/plate.ts';
 import { matrixOf, positionOf } from '../state/plate.ts';
+import { buildBed, disposeTree } from './bed.ts';
 import { TouchControls } from './touch-controls.ts';
 
 const COLOURS = {
   object: 0x7dd3fc,
   selected: 0x38bdf8,
   problem: 0xf87171,
-  bed: 0x121924,
-  grid: 0x2a3646,
-  border: 0x64748b,
-  exclude: 0x7f1d1d,
   outline: 0xe8eef6,
 };
 
@@ -170,84 +163,30 @@ export class PlaterScene {
   private clearBed(): void {
     for (const child of [...this.bedGroup.children]) {
       this.bedGroup.remove(child);
-      disposeObject(child);
+      disposeTree(child);
     }
   }
 
-  /** Draw the machine's real plate: `printable_area`, `bed_exclude_area`, height. */
+  /**
+   * Draw the machine's real plate: `printable_area`, `bed_exclude_area`, height.
+   *
+   * The geometry itself lives in `bed.ts` because M5's preview draws the same plate, and
+   * two implementations of "where is the bed" would eventually disagree about it.
+   */
   setBed(bed: BedSpec | null): void {
     this.clearBed();
-    if (!bed || bed.printableArea.length < 3) {
+    const view = bed ? buildBed(bed) : null;
+    if (!view) {
       this.invalidate();
       return;
     }
-
-    const shape = new Shape();
-    bed.printableArea.forEach((point, index) => {
-      if (index === 0) shape.moveTo(point[0], point[1]);
-      else shape.lineTo(point[0], point[1]);
-    });
-    shape.closePath();
-    const surface = new Mesh(
-      new ShapeGeometry(shape),
-      new MeshLambertMaterial({ color: COLOURS.bed, side: DoubleSide }),
-    );
-    surface.position.z = -0.05; // under the grid, so the lines are not z-fought away
-    surface.name = 'bed';
-    this.bedGroup.add(surface);
-
-    const xs = bed.printableArea.map((point) => point[0]);
-    const ys = bed.printableArea.map((point) => point[1]);
-    const minX = Math.min(...xs);
-    const maxX = Math.max(...xs);
-    const minY = Math.min(...ys);
-    const maxY = Math.max(...ys);
-    this.bedSize = Math.max(maxX - minX, maxY - minY);
-
-    const step = this.bedSize > 400 ? 50 : 10;
-    const lines: number[] = [];
-    for (let x = Math.ceil(minX / step) * step; x <= maxX; x += step) {
-      lines.push(x, minY, 0, x, maxY, 0);
-    }
-    for (let y = Math.ceil(minY / step) * step; y <= maxY; y += step) {
-      lines.push(minX, y, 0, maxX, y, 0);
-    }
-    const grid = new BufferGeometry();
-    grid.setAttribute('position', new Float32BufferAttribute(lines, 3));
-    this.bedGroup.add(new LineSegments(grid, new LineBasicMaterial({ color: COLOURS.grid })));
-
-    const border: number[] = [];
-    bed.printableArea.forEach((point, index) => {
-      const next = bed.printableArea[(index + 1) % bed.printableArea.length] as [number, number];
-      border.push(point[0], point[1], 0.02, next[0], next[1], 0.02);
-    });
-    const borderGeometry = new BufferGeometry();
-    borderGeometry.setAttribute('position', new Float32BufferAttribute(border, 3));
-    this.bedGroup.add(
-      new LineSegments(borderGeometry, new LineBasicMaterial({ color: COLOURS.border })),
-    );
-
-    if (bed.excludeArea.length >= 3) {
-      // The nozzle-wipe pad and friends. The engine refuses to slice an object standing on
-      // one (exit -52), so it is drawn rather than left as a surprise.
-      const excluded = new Shape();
-      bed.excludeArea.forEach((point, index) => {
-        if (index === 0) excluded.moveTo(point[0], point[1]);
-        else excluded.lineTo(point[0], point[1]);
-      });
-      excluded.closePath();
-      const mesh = new Mesh(
-        new ShapeGeometry(excluded),
-        new MeshLambertMaterial({ color: COLOURS.exclude, transparent: true, opacity: 0.55 }),
-      );
-      mesh.position.z = 0.01;
-      this.bedGroup.add(mesh);
-    }
+    this.bedGroup.add(view.group);
+    this.bedSize = view.size;
 
     // 1.25 x the plate's longest side, looking slightly above it: the plate fills the
     // viewport on a 390px screen without the near corner falling out of frame.
     this.controls.frame(
-      new Vector3((minX + maxX) / 2, (minY + maxY) / 2, this.bedSize * 0.06),
+      new Vector3(view.centre.x, view.centre.y, this.bedSize * 0.06),
       this.bedSize * 1.25,
     );
     this.invalidate();
@@ -486,10 +425,4 @@ export async function renderPlateThumbnail(
   } finally {
     scene.dispose();
   }
-}
-
-function disposeObject(object: unknown): void {
-  const node = object as { geometry?: { dispose(): void }; material?: { dispose(): void } };
-  node.geometry?.dispose();
-  node.material?.dispose();
 }

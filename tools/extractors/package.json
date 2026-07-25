@@ -5,9 +5,24 @@
   "description": "Build-time extractors: PrintConfig.cpp option schema and the resolved profile catalog",
   "license": "AGPL-3.0-or-later",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "orca-extract": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc --build",
-    "clean": "tsc --build --clean"
+    "clean": "tsc --build --clean",
+    "extract": "npm run build && node --use-env-proxy dist/cli.js"
   },
   "dependencies": {
     "@orca-web/shared": "*"

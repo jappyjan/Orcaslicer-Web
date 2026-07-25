@@ -270,6 +270,8 @@ COPY --from=build --chown=orca:orca /src/packages/shared/package.json /app/packa
 COPY --from=build --chown=orca:orca /src/packages/shared/dist /app/packages/shared/dist
 COPY --from=build --chown=orca:orca /src/packages/catalog/package.json /app/packages/catalog/package.json
 COPY --from=build --chown=orca:orca /src/packages/catalog/dist /app/packages/catalog/dist
+COPY --from=build --chown=orca:orca /src/packages/gcode/package.json /app/packages/gcode/package.json
+COPY --from=build --chown=orca:orca /src/packages/gcode/dist /app/packages/gcode/dist
 COPY --from=build --chown=orca:orca /src/apps/api/package.json /app/apps/api/package.json
 COPY --from=build --chown=orca:orca /src/apps/api/dist /app/apps/api/dist
 

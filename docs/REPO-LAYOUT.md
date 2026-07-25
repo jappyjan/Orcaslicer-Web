@@ -25,8 +25,9 @@ parallel structure.
 │   │       ├── catalog/     #   start-up load + response/ETag caching for GET /catalog
 │   │       ├── storage/     #   SQLite metadata, content-addressed models, artefacts
 │   │       ├── jobs/        #   orchestration and the SSE event bus
+│   │       ├── preview/     #   lazy G-code-preview compile + on-disk cache          (M5)
 │   │       └── http/        #   Fastify routes, error mapping, static.ts serves the client
-│   │           └── routes/  #     one module per feature-sized group of routes       (M4)
+│   │           └── routes/  #     one file per feature-sized route group        (M4, M5)
 │   └── web/                 # @orca-web/web  — React + Vite + Tailwind             (M3)
 │       └── src/
 │           ├── api/        #   the API client: error contract, catalog, jobs + SSE
@@ -36,7 +37,8 @@ parallel structure.
 │
 ├── packages/
 │   ├── shared/              # @orca-web/shared  — types crossing the HTTP boundary
-│   └── catalog/             # @orca-web/catalog — READS the generated artefacts    (M2)
+│   ├── catalog/             # @orca-web/catalog — READS the generated artefacts    (M2)
+│   └── gcode/               # @orca-web/gcode   — G-code → binary preview format   (M5)
 │
 ├── tools/
 │   └── extractors/          # @orca-web/extractors — WRITES them, build-time only (M2)
@@ -56,6 +58,7 @@ parallel structure.
 └── docs/
     ├── SPEC.md              # authoritative brief
     ├── REPO-LAYOUT.md       # this file
+    ├── GCODE-PREVIEW-FORMAT.md  # the M5 binary format: byte layout and why       (M5)
     └── adr/                 # architecture decision records, written before the code
 ```
 
@@ -84,6 +87,22 @@ Two consequences worth stating, because they are what the rule is actually prote
   transitive import. `@orca-web/catalog` has no dependencies at all.
 - The runtime image contains `packages/catalog/dist` and `/generated`, but not
   `tools/extractors`. The Dockerfile enforces it by omission.
+
+**`packages/gcode` is a library, not a tool.** It looks like `tools/extractors` — it reads
+a big file and writes a generated artefact — but the difference is decisive: it runs in the
+request path, on a job's own output, at request time. `tools/*` parses pinned upstream
+artefacts at image-build time and may never be imported by a running server; `@orca-web/gcode`
+depends on nothing, reads one G-code file with `createReadStream` and writes two files, and
+compiles the preview for a job that a user is looking at. It is deliberately free of any
+knowledge of jobs, artefact stores or HTTP — `apps/api/src/preview/` owns the caching and
+`apps/api/src/http/routes/preview.ts` owns the wire format — so the same compiler can be
+pointed at a file from a script or a test without booting a server.
+
+**`http/routes/` for route groups added after M3.** `server.ts` owns the job and model
+endpoints it grew up with; anything feature-sized added later gets its own module and one
+registration line, so two milestones can add endpoints without editing the same 300 lines.
+The rule for a route module: it takes only the dependencies it uses, it throws the error
+types `http/errors.ts` already maps, and it never formats an error body itself.
 
 **A single `packages/shared`, not one package per concept.** The API and the web client
 have to agree on job descriptors, progress events, artefact names and preset references.
@@ -169,7 +188,9 @@ with no Docker and no browser.
 **`test/` at the root, not per-package.** `test/fixtures/cube20.stl` and
 `test/golden/orca-slicer-help.txt` describe the _container_, not any one workspace, and
 they are copied into the image. Per-workspace unit tests live next to their sources as
-`*.test.ts`.
+`*.test.ts`. `test/fixtures/gcode/` joins them for the same reason: those files are
+_output of the pinned binary_, not of any workspace, and M5's parser tests would be
+worthless against G-code their author wrote (see the README there).
 
 ## Conventions
 

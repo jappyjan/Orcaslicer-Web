@@ -60,6 +60,32 @@ jobs:
       - name: Smoke slice (headless, no display server)
         run: docker compose run --rm smoke
 
+      # `docker compose run --rm integration` bind-mounts this checkout into the image
+      # and runs `npx vitest` inside it. The image is installed with `npm ci --omit=dev`
+      # and carries no test runner on purpose, so — as the compose file says — vitest and
+      # the TypeScript sources come from the *mount*. `npx` fetches the vitest binary but
+      # Vite loads the config by writing a temp module next to it in `/repo`, and Node
+      # resolves that module's imports from `/repo/node_modules`. Without this step there
+      # is no `/repo/node_modules` and the config fails to load before a single test is
+      # selected — which is what "Cannot find package 'vitest'" in this job was, twice.
+      #
+      # It runs after the image build so the install never enters the build context
+      # (`.dockerignore` excludes node_modules, but a 300 MB directory is still worth not
+      # creating before a `COPY . .`).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install the runner-side dependencies the mounted repo needs
+        run: npm ci --no-audit --no-fund
+
+      # `@orca-web/shared`, `@orca-web/catalog` and `@orca-web/gcode` publish `dist/`
+      # rather than source, and the integration tests import all three. On a developer's
+      # machine `npm run check` has already emitted them; a fresh runner has not.
+      - name: Build the workspace packages the tests import
+        run: npx tsc --build tsconfig.json
+
       # The M1 acceptance criterion, and the working agreement's "the CI suite must
       # include at least one real slice": three concurrent slices through the HTTP API,
       # progress streamed for each, and /work empty afterwards. The engine is not

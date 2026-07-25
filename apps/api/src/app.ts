@@ -25,6 +25,7 @@ import { type Db, openDatabase } from './storage/db.js';
 import { JobStore } from './storage/job-store.js';
 import { ModelStore } from './storage/model-store.js';
 import { buildServer } from './http/server.js';
+import { UserPresetStore } from './settings/user-preset-store.js';
 
 export interface AppOverrides {
   config?: Partial<AppConfig>;
@@ -51,6 +52,7 @@ export interface App {
   engine: SlicerEngine;
   resolver: ProfileResolver;
   catalog: CatalogService | undefined;
+  userPresets: UserPresetStore;
   db: Db;
   close(): Promise<void>;
 }
@@ -72,6 +74,7 @@ export async function createApp(overrides: AppOverrides = {}): Promise<App> {
   });
   const artifacts = new ArtifactStore(config.dataDir);
   const events = new JobEventBus();
+  const userPresets = new UserPresetStore(db);
 
   const engine =
     overrides.engine ??
@@ -99,6 +102,9 @@ export async function createApp(overrides: AppOverrides = {}): Promise<App> {
     config,
     engine,
     resolver,
+    // M6: overrides are validated against the same generated schema the UI renders from,
+    // so a key the server would refuse can never be offered as a field.
+    ...(catalog === undefined ? {} : { settingsSchema: catalog.query.configSchema() }),
     jobs,
     models,
     artifacts,
@@ -128,6 +134,7 @@ export async function createApp(overrides: AppOverrides = {}): Promise<App> {
     service,
     resolver,
     catalog,
+    userPresets,
   });
 
   if (catalog === undefined) {
@@ -171,6 +178,7 @@ export async function createApp(overrides: AppOverrides = {}): Promise<App> {
     engine,
     resolver,
     catalog,
+    userPresets,
     db,
     async close() {
       clearInterval(sweeper);

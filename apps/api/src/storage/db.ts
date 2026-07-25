@@ -40,6 +40,19 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS jobs_state ON jobs (state);
 CREATE INDEX IF NOT EXISTS jobs_created ON jobs (created_at);
+
+-- M6's named user presets. A set of config-key OVERRIDES, not a profile: nothing this
+-- application stores is ever written into OrcaSlicer's own resources/profiles tree.
+-- See settings/user-preset-store.ts for why that distinction is load-bearing.
+CREATE TABLE IF NOT EXISTS user_presets (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  overrides  TEXT NOT NULL DEFAULT '{}',
+  based_on   TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS user_presets_updated ON user_presets (updated_at);
 `;
 
 export function openDatabase(file: string): Db {

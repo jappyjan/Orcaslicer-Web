@@ -46,6 +46,7 @@ import type {
 import { buildAssembleList } from './assemble-list.js';
 import { matchDiagnostic } from './diagnostics.js';
 import { sliceErrorForExit } from './exit-codes.js';
+import { overrideArgs } from './overrides.js';
 import { ProgressPipe, type RawPipeMessage } from './progress-pipe.js';
 import {
   SLICE_INFO_ENTRY,
@@ -119,11 +120,6 @@ class ProgressBuffer {
       });
     }
   }
-}
-
-function formatOverride(value: string | number | boolean): string {
-  if (typeof value === 'boolean') return value ? '1' : '0';
-  return String(value);
 }
 
 function assertFlattened(profile: SliceJob['machine']): void {
@@ -566,14 +562,10 @@ export class OrcaCliEngine implements SlicerEngine {
       args.push('--filament-colour', job.filamentColours.join(';'));
     }
 
-    for (const [key, value] of Object.entries(job.overrides)) {
-      if (!/^[a-z][a-z0-9_]*$/.test(key)) {
-        throw new SliceError('INVALID_PARAMS', `"${key}" is not a valid setting name.`, {
-          hint: 'Setting names are lower-case identifiers such as `layer_height`.',
-        });
-      }
-      args.push(`--${key.replace(/_/g, '-')}`, formatOverride(value));
-    }
+    // M6's diff-and-override: the only thing that changes a setting for this job, and the
+    // reason no new profile file is ever written. See overrides.ts for why every one of
+    // these is a single `--key=value` token (SPEC deviations #23 and #25).
+    args.push(...overrideArgs(job.overrides));
 
     return args;
   }

@@ -273,7 +273,26 @@ not (392 presets, 1.3 MB, because `OrcaFilamentLibrary` is offered for every pri
 Filter client-side after one fetch — it is cacheable and version-stable — rather than
 round-tripping per keystroke.
 
-## Notes for M6 (generated settings UI)
+## Notes for M6 (generated settings UI) — now built
+
+M6 renders from this schema; the notes below are what it was built against and all of them
+held. What it added on top:
+
+- The predicate for "is this option offered at all" lives in two places that must agree —
+  `apps/web/src/state/settings.ts` (`isEditable`) and `apps/api/src/settings/schema.ts`
+  (`notRenderableReason`), the second enforcing what the first offers. Besides `develop`
+  and `extruder_printable_area` it also excludes the **76 SLA options** (`section:
+init_sla_params` — this application slices FFF) and the `point`/`points` kinds, which are
+  bed geometry the plater draws itself from.
+- **439 of the 751 options have no `category`.** Hiding all of them would leave 58 % of the
+  schema uneditable, so the non-SLA remainder is grouped by _which preset supplies the
+  value_ — read off `GET /settings/resolved`, which is real information rather than a
+  guess. Upstream's 11 categories still come first and unchanged.
+- The "diff against the preset, not against `default`" note below is the single most
+  load-bearing line in this file for M6, and `GET /settings/resolved` exists purely to make
+  it possible: it returns the flattened merge **and** a per-key note of which preset
+  supplied each value, so "no preset sets this, the slicer would use its built-in" is a
+  sentence the UI can say rather than a case it silently gets wrong.
 
 - Group by `category`; options with no `category` are internal and are not shown in
   Orca's own settings pages either.

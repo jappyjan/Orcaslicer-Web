@@ -50,6 +50,21 @@ import {
   type Selection,
 } from '../state/selection.ts';
 import { readRecentModels, rememberModel, saveRecentModels } from '../state/recent-models.ts';
+import {
+  deleteUserPreset,
+  loadConfigSchema,
+  loadResolvedSettings,
+  loadUserPresets,
+  saveUserPreset,
+} from '../api/settings.ts';
+import {
+  NO_OVERRIDES,
+  modifiedCount,
+  reconcile,
+  type ConfigSchema,
+  type SettingsState,
+} from '../state/settings.ts';
+import { SettingsScreen } from './SettingsScreen.tsx';
 import { JobScreen, type PreviewState } from './JobScreen.tsx';
 import { ModelPicker } from './ModelPicker.tsx';
 import { PresetPicker } from './PresetPicker.tsx';
@@ -82,7 +97,7 @@ const PreviewScreen = lazy(async () => ({
 const plater = () => import('./PlaterScreen.tsx');
 const geometryModule = () => import('../three/geometry.ts');
 const sceneModule = () => import('../three/plater-scene.ts');
-import type { BedSpec } from '@orca-web/shared';
+import type { BedSpec, ResolvedSettings, UserPreset } from '@orca-web/shared';
 import { Button, ErrorNotice, Spinner } from './primitives.tsx';
 
 interface PresetState {
@@ -103,6 +118,27 @@ function previewJobFromHash(): string | null {
     return null;
   }
 }
+
+/**
+ * M6's settings, as one lazily-filled bundle.
+ *
+ * `schema` is 708 kB and `resolved` needs three preset names, so neither is fetched until
+ * the settings sheet is opened for the first time — the setup screen must stay usable on
+ * mobile data without either.
+ */
+interface SettingsBundle {
+  schema: ConfigSchema | null;
+  resolved: ResolvedSettings | null;
+  loading: boolean;
+  error: ApiError | null;
+}
+
+const NO_SETTINGS: SettingsBundle = {
+  schema: null,
+  resolved: null,
+  loading: false,
+  error: null,
+};
 
 function storage(): Storage | undefined {
   try {
@@ -139,6 +175,10 @@ export function App() {
   const [previewJob, setPreviewJob] = useState<string | null>(() => previewJobFromHash());
   const [cancelling, setCancelling] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [settings, setSettings] = useState<SettingsBundle>(NO_SETTINGS);
+  const [overrides, setOverrides] = useState<SettingsState>(NO_OVERRIDES);
+  const [userPresets, setUserPresets] = useState<UserPreset[]>([]);
+  const [presetError, setPresetError] = useState<ApiError | null>(null);
 
   /** Captured when Slice is pressed; uploaded when the job succeeds. */
   const thumbnail = useRef<Blob | null>(null);
@@ -353,6 +393,89 @@ export function App() {
     }));
   }, [selection]);
 
+  // -- settings (M6) -------------------------------------------------------
+  /** The three presets a slice would resolve — the base the settings diff is taken from. */
+  const presetRefs = useMemo(() => {
+    const machine = selectedNozzle(selection);
+    if (!selection.printer || !machine || !selection.process || !selection.filament) return null;
+    return {
+      machine: {
+        kind: 'machine' as const,
+        vendor: selection.printer.vendorId,
+        name: machine.machinePresetName,
+      },
+      process: {
+        kind: 'process' as const,
+        vendor: selection.process.vendor,
+        name: selection.process.name,
+      },
+      filament: {
+        kind: 'filament' as const,
+        vendor: selection.filament.vendor,
+        name: selection.filament.name,
+      },
+    };
+  }, [selection]);
+
+  /**
+   * Fetch the schema and the resolved preset. Called when the settings sheet opens and
+   * again whenever the presets underneath it change — a stale baseline would mislabel
+   * every field as modified or not.
+   */
+  const fetchSettings = useCallback(() => {
+    if (presetRefs === null) return;
+    setSettings((current) => ({ ...current, loading: true, error: null }));
+    Promise.all([loadConfigSchema(), loadResolvedSettings(presetRefs)]).then(
+      ([schema, resolved]) => {
+        setSettings({ schema, resolved, loading: false, error: null });
+        // An override that now equals its new preset is no longer a modification.
+        setOverrides((current) => reconcile(current, schema, resolved));
+      },
+      (error: unknown) =>
+        setSettings((current) => ({ ...current, loading: false, error: asApiError(error) })),
+    );
+  }, [presetRefs]);
+
+  useEffect(() => {
+    // Only refresh what is already loaded: opening the sheet is what pays the 708 kB.
+    // Keyed on the presets alone: depending on `fetchSettings` (which closes over them)
+    // or on the bundle it writes would make this a loop.
+    if (settings.schema !== null) fetchSettings();
+  }, [presetRefs]);
+
+  const openSettings = useCallback(() => {
+    setSheet('settings');
+    if (settings.schema === null) fetchSettings();
+    loadUserPresets().then(setUserPresets, () => setUserPresets([]));
+  }, [fetchSettings, settings.schema]);
+
+  const savePreset = useCallback(
+    async (name: string) => {
+      setPresetError(null);
+      try {
+        await saveUserPreset({
+          name,
+          overrides: overrides.overrides,
+          basedOn: presetRefs,
+        });
+        setUserPresets(await loadUserPresets());
+      } catch (error) {
+        setPresetError(asApiError(error));
+      }
+    },
+    [overrides, presetRefs],
+  );
+
+  const removePreset = useCallback(async (id: string) => {
+    setPresetError(null);
+    try {
+      await deleteUserPreset(id);
+      setUserPresets(await loadUserPresets());
+    } catch (error) {
+      setPresetError(asApiError(error));
+    }
+  }, []);
+
   // -- persistence ---------------------------------------------------------
   useEffect(() => {
     if (!hydrated.current) return;
@@ -408,69 +531,76 @@ export function App() {
    *     (no display server) and `--min-save` leaves the member out entirely, so the
    *     printer's screen would otherwise show an empty preview.
    */
-  const startJob = useCallback((current: Selection, currentPlate: Plate) => {
-    if (!isComplete(current)) return;
-    setSubmitError(null);
-    setSubmitting(true);
-    setNotice(null);
-    setPreview('none');
+  const startJob = useCallback(
+    (current: Selection, currentPlate: Plate, currentOverrides: SettingsState) => {
+      if (!isComplete(current)) return;
+      setSubmitError(null);
+      setSubmitting(true);
+      setNotice(null);
+      setPreview('none');
 
-    const placed =
-      currentPlate.instances.length > 0 ? toPlateSpec(currentPlate.instances) : undefined;
-    thumbnail.current = null;
-    // Fire-and-forget: a preview is worth a round trip, never worth blocking a slice.
-    void (async () => {
-      const [{ loadGeometry }, { renderPlateThumbnail }] = await Promise.all([
-        geometryModule(),
-        sceneModule(),
-      ]);
-      const entries = await Promise.all(
-        [...new Set(currentPlate.instances.map((instance) => instance.modelId))].map(async (id) => {
-          const instance = currentPlate.instances.find((candidate) => candidate.modelId === id);
-          return [id, await loadGeometry(id, instance?.filename ?? '')] as const;
-        }),
-      );
-      thumbnail.current = await renderPlateThumbnail(
-        bedRef.current,
-        currentPlate.instances,
-        new Map(entries),
-      );
-    })().catch(() => {
+      const placed =
+        currentPlate.instances.length > 0 ? toPlateSpec(currentPlate.instances) : undefined;
       thumbnail.current = null;
-    });
+      // Fire-and-forget: a preview is worth a round trip, never worth blocking a slice.
+      void (async () => {
+        const [{ loadGeometry }, { renderPlateThumbnail }] = await Promise.all([
+          geometryModule(),
+          sceneModule(),
+        ]);
+        const entries = await Promise.all(
+          [...new Set(currentPlate.instances.map((instance) => instance.modelId))].map(
+            async (id) => {
+              const instance = currentPlate.instances.find((candidate) => candidate.modelId === id);
+              return [id, await loadGeometry(id, instance?.filename ?? '')] as const;
+            },
+          ),
+        );
+        thumbnail.current = await renderPlateThumbnail(
+          bedRef.current,
+          currentPlate.instances,
+          new Map(entries),
+        );
+      })().catch(() => {
+        thumbnail.current = null;
+      });
 
-    createJob(buildDescriptor(current, placed)).then(
-      (created) => {
-        setSubmitting(false);
-        const started = initialProgress(Date.now());
-        setJob({ id: created.id, model: { ...started, state: created.state } });
-        setNow(Date.now());
-        unsubscribe.current?.();
-        unsubscribe.current = subscribeToJob(created.id, {
-          onEvent: (event: JobEvent) => {
-            if (event.type === 'done') attachThumbnail(event.jobId);
-            setJob((state) =>
-              state && state.id === event.jobId
-                ? { ...state, model: reduceProgress(state.model, event, Date.now()) }
-                : state,
-            );
-          },
-          onDegraded: () =>
-            setJob((state) =>
-              state ? { ...state, model: { ...state.model, degraded: true } } : state,
-            ),
-          onError: (error) =>
-            setJob((state) =>
-              state ? { ...state, model: { ...state.model, error, state: 'failed' } } : state,
-            ),
-        });
-      },
-      (error: unknown) => {
-        setSubmitting(false);
-        setSubmitError(asApiError(error));
-      },
-    );
-  }, []);
+      // Diff-and-override: only the keys that differ from the resolved preset travel, as
+      // flags. No profile file is written, here or on the server.
+      createJob(buildDescriptor(current, placed, currentOverrides.overrides)).then(
+        (created) => {
+          setSubmitting(false);
+          const started = initialProgress(Date.now());
+          setJob({ id: created.id, model: { ...started, state: created.state } });
+          setNow(Date.now());
+          unsubscribe.current?.();
+          unsubscribe.current = subscribeToJob(created.id, {
+            onEvent: (event: JobEvent) => {
+              if (event.type === 'done') attachThumbnail(event.jobId);
+              setJob((state) =>
+                state && state.id === event.jobId
+                  ? { ...state, model: reduceProgress(state.model, event, Date.now()) }
+                  : state,
+              );
+            },
+            onDegraded: () =>
+              setJob((state) =>
+                state ? { ...state, model: { ...state.model, degraded: true } } : state,
+              ),
+            onError: (error) =>
+              setJob((state) =>
+                state ? { ...state, model: { ...state.model, error, state: 'failed' } } : state,
+              ),
+          });
+        },
+        (error: unknown) => {
+          setSubmitting(false);
+          setSubmitError(asApiError(error));
+        },
+      );
+    },
+    [],
+  );
 
   /** Write the captured preview into the finished archive, then let the download appear. */
   const attachThumbnail = useCallback((jobId: string) => {
@@ -517,8 +647,8 @@ export function App() {
     unsubscribe.current?.();
     unsubscribe.current = null;
     setJob(null);
-    startJob(selection, plate);
-  }, [plate, selection, startJob]);
+    startJob(selection, plate, overrides);
+  }, [overrides, plate, selection, startJob]);
 
   /** What the setup screen's Plate row says underneath "N objects". */
   const plateDetail = useMemo(() => {
@@ -534,6 +664,20 @@ export function App() {
       ? `at ${Math.round(selectedInstance.x)}, ${Math.round(selectedInstance.y)} mm`
       : 'Tap to arrange';
   }, [bed, plate.instances]);
+
+  /** What the setup screen's Settings row says underneath the count. */
+  const settingsDetail = useMemo(() => {
+    const keys = Object.keys(overrides.overrides);
+    if (keys.length === 0) return 'Change layer height, supports, infill…';
+    const named = keys
+      .slice(0, 3)
+      .map((key) => {
+        const option = settings.schema?.options[key];
+        return option === undefined ? key : (option.label ?? key);
+      })
+      .join(', ');
+    return keys.length > 3 ? `${named} +${keys.length - 3} more` : named;
+  }, [overrides, settings.schema]);
 
   const jobHeading = useMemo(() => {
     const parts = [selection.printer?.name, selection.nozzle ? `${selection.nozzle} mm` : null]
@@ -597,9 +741,9 @@ export function App() {
       <SetupScreen
         catalog={catalog}
         selection={selection}
-        onOpen={setSheet}
+        onOpen={(name) => (name === 'settings' ? openSettings() : setSheet(name))}
         onNozzle={(variant) => setSelection((current) => withNozzle(current, variant))}
-        onSlice={() => startJob(selection, plate)}
+        onSlice={() => startJob(selection, plate, overrides)}
         onOpenPlater={() => setShowPlater(true)}
         plateCount={plate.instances.length}
         plateDetail={plateDetail}
@@ -607,6 +751,8 @@ export function App() {
         error={submitError}
         onDismissError={() => setSubmitError(null)}
         notice={notice}
+        settingsCount={modifiedCount(overrides)}
+        settingsDetail={settingsDetail}
       />
 
       {showPlater ? (
@@ -623,7 +769,7 @@ export function App() {
               setSheet('model');
             }}
             onArrange={runArrange}
-            onSlice={() => startJob(selection, plate)}
+            onSlice={() => startJob(selection, plate, overrides)}
             slicing={submitting}
           />
         </Suspense>
@@ -665,6 +811,24 @@ export function App() {
             setSheet(null);
           }}
           onClose={() => setSheet(null)}
+        />
+      ) : null}
+
+      {sheet === 'settings' ? (
+        <SettingsScreen
+          schema={settings.schema}
+          resolved={settings.resolved}
+          loading={settings.loading}
+          error={settings.error}
+          onRetry={fetchSettings}
+          state={overrides}
+          onChange={setOverrides}
+          onClose={() => setSheet(null)}
+          userPresets={userPresets}
+          presetContext={presetRefs}
+          onSavePreset={savePreset}
+          onDeletePreset={removePreset}
+          presetError={presetError}
         />
       ) : null}
 

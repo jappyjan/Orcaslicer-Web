@@ -15,7 +15,7 @@ import type { Catalog } from '../api/catalog.ts';
 import { missingStep, type Selection } from '../state/selection.ts';
 import { Button, ErrorNotice, Row } from './primitives.tsx';
 
-export type SheetName = 'model' | 'printer' | 'process' | 'filament';
+export type SheetName = 'model' | 'printer' | 'process' | 'filament' | 'settings';
 
 export function SetupScreen({
   catalog,
@@ -30,6 +30,8 @@ export function SetupScreen({
   onOpenPlater,
   plateCount,
   plateDetail,
+  settingsCount,
+  settingsDetail,
 }: {
   catalog: Catalog;
   selection: Selection;
@@ -43,6 +45,9 @@ export function SetupScreen({
   onOpenPlater: () => void;
   plateCount: number;
   plateDetail: string;
+  /** How many settings differ from the resolved preset (M6's diff). */
+  settingsCount: number;
+  settingsDetail: string;
 }) {
   const missing = missingStep(selection);
   const printer = selection.printer;
@@ -154,6 +159,25 @@ export function SetupScreen({
           onClick={onOpenPlater}
           disabled={plateCount === 0}
           testId="row-plate"
+        />
+
+        {/*
+          Settings (M6). Last, and below the plate, because it is the only row that is
+          optional: everything above has to be answered before a slice, this one has a
+          correct answer already. It stays disabled until there is a process and a filament
+          to diff against — "modified from the preset" needs a preset.
+        */}
+        <Row
+          label="Settings"
+          value={
+            settingsCount === 0
+              ? 'Preset values'
+              : `${settingsCount} change${settingsCount === 1 ? '' : 's'}`
+          }
+          detail={settingsCount === 0 ? 'Change layer height, supports, infill…' : settingsDetail}
+          onClick={() => onOpen('settings')}
+          disabled={selection.process === null || selection.filament === null}
+          testId="row-settings"
         />
       </main>
 

@@ -9,7 +9,13 @@
  * {@link withNozzle} do that rather than leaving a stale preset that would 400 on submit.
  */
 
-import type { JobRequest, ModelSummary, PlateSpec, PresetRef } from '@orca-web/shared';
+import type {
+  JobRequest,
+  ModelSummary,
+  PlateSpec,
+  PresetRef,
+  SettingOverrides,
+} from '@orca-web/shared';
 import type { PresetOption, PrinterOption } from '../api/catalog.ts';
 
 export interface Selection {
@@ -88,7 +94,11 @@ export function isComplete(selection: Selection): boolean {
  * Without one — no bed loaded, no plater visited — the M3 behaviour still applies and the
  * engine decides where the object goes.
  */
-export function buildDescriptor(selection: Selection, plate?: PlateSpec): JobRequest {
+export function buildDescriptor(
+  selection: Selection,
+  plate?: PlateSpec,
+  overrides?: SettingOverrides,
+): JobRequest {
   const { model, printer, process, filament } = selection;
   const nozzle = selectedNozzle(selection);
   if (!model || !printer || !nozzle || !process || !filament) {
@@ -106,6 +116,11 @@ export function buildDescriptor(selection: Selection, plate?: PlateSpec): JobReq
     printer: machine,
     process: { kind: 'process', vendor: process.vendor, name: process.name },
     filaments: [{ kind: 'filament', vendor: filament.vendor, name: filament.name }],
+    // M6's diff-and-override: only the keys the user changed, as flags. The presets above
+    // are untouched — nothing writes a new profile file, and the settings priority puts a
+    // flag above `--load-settings` anyway. An empty diff is omitted entirely so an
+    // unmodified job's descriptor is byte-identical to M3's.
+    ...(overrides === undefined || Object.keys(overrides).length === 0 ? {} : { overrides }),
     input: {
       kind: 'plates',
       plates: [

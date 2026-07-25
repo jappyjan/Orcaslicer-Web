@@ -12,6 +12,8 @@
  *   DELETE /jobs/:id                  cancel and clean up
  *   GET    /catalog                   vendors → printer models → nozzle variants (?schema=1)
  *   GET    /catalog/presets           resolved process/filament presets for a printer
+ *   GET    /settings/resolved         preset values a slice would use, before overrides (M6)
+ *   *      /settings/presets[/:id]    named user presets — ours, not OrcaSlicer's      (M6)
  *   GET    /models/:id/file           model bytes for the plater's mesh loader   (M4)
  *   GET    /plater/bed                the real build plate for a printer         (M4)
  *   POST   /plater/arrange            engine-side auto-arrange                   (M4)
@@ -40,7 +42,9 @@ import type { SlicerEngine } from '../engine/port.js';
 import { registerCatalogRoutes } from './catalog-routes.js';
 import { registerPlaterRoutes } from './routes/plater.js';
 import { registerPreviewRoutes } from './routes/preview.js';
+import { registerSettingsRoutes } from './routes/settings.js';
 import { PreviewStore } from '../preview/store.js';
+import type { UserPresetStore } from '../settings/user-preset-store.js';
 import { isApiPath, registerStatic, wantsHtml } from './static.js';
 import {
   BadRequestError,
@@ -71,6 +75,8 @@ export interface ServerDeps {
   catalog: CatalogService | undefined;
   /** M5's lazy G-code-preview cache. Defaulted from `artifacts`; injectable for tests. */
   preview?: PreviewStore;
+  /** M6's named user presets — this application's own, never OrcaSlicer profile files. */
+  userPresets: UserPresetStore;
 }
 
 const SSE_HEARTBEAT_MS = 15_000;
@@ -130,6 +136,11 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
 
   registerCatalogRoutes(app, deps.catalog);
   registerPlaterRoutes(app, deps);
+  registerSettingsRoutes(app, {
+    resolver: deps.resolver,
+    catalog: deps.catalog,
+    userPresets: deps.userPresets,
+  });
   registerPreviewRoutes(app, {
     jobs: deps.jobs,
     preview:

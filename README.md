@@ -92,20 +92,22 @@ docker compose run --rm shell
 `docker compose up api` starts it on `:8080`. Everything is JSON except the multipart
 upload and the artefact downloads.
 
-| Endpoint                            |                                                               |
-| ----------------------------------- | ------------------------------------------------------------- |
-| `POST /jobs`                        | multipart: model files + a `descriptor` JSON field → `202`    |
-| `GET /jobs/:id`                     | state, progress, warnings, stats, artefacts                   |
-| `GET /jobs/:id/events`              | SSE: `state`, `progress`, `done`, `failed`                    |
-| `GET /jobs/:id/artifacts/:name`     | `result.gcode.3mf` and `plate_N.gcode`                        |
-| `GET /jobs/:id/preview`             | which plates have a G-code preview                            |
-| `GET /jobs/:id/preview/:plate`      | the preview's layer index (JSON)                              |
-| `GET /jobs/:id/preview/:plate/data` | layer chunks, `Range`-addressable (M5)                        |
-| `DELETE /jobs/:id`                  | cancel and clean up → `204`                                   |
-| `POST /models`                      | upload without slicing → content ids                          |
-| `GET /catalog`                      | vendors → printer models → nozzle variants (`?schema=1`)      |
-| `GET /catalog/presets`              | `?type=process\|filament&model=…&nozzle=…` → resolved presets |
-| `GET /healthz`                      | engine and queue state, resolver, catalog counts              |
+| Endpoint                                |                                                               |
+| --------------------------------------- | ------------------------------------------------------------- |
+| `POST /jobs`                            | multipart: model files + a `descriptor` JSON field → `202`    |
+| `GET /jobs/:id`                         | state, progress, warnings, stats, artefacts                   |
+| `GET /jobs/:id/events`                  | SSE: `state`, `progress`, `done`, `failed`                    |
+| `GET /jobs/:id/artifacts/:name`         | `result.gcode.3mf` and `plate_N.gcode`                        |
+| `GET /jobs/:id/preview`                 | which plates have a G-code preview                            |
+| `GET /jobs/:id/preview/:plate`          | the preview's layer index (JSON)                              |
+| `GET /jobs/:id/preview/:plate/data`     | layer chunks, `Range`-addressable (M5)                        |
+| `DELETE /jobs/:id`                      | cancel and clean up → `204`                                   |
+| `POST /models`                          | upload without slicing → content ids                          |
+| `GET /catalog`                          | vendors → printer models → nozzle variants (`?schema=1`)      |
+| `GET /catalog/presets`                  | `?type=process\|filament&model=…&nozzle=…` → resolved presets |
+| `GET /settings/resolved`                | preset values a slice would use, before overrides (M6)        |
+| `GET/POST/PUT/DELETE /settings/presets` | named user presets — ours, not OrcaSlicer's                   |
+| `GET /healthz`                          | engine and queue state, resolver, catalog counts              |
 
 ```bash
 curl -X POST localhost:8080/jobs \
@@ -284,6 +286,56 @@ the tab**, and the layer slider must stay responsive while scrubbing.
   belongs to on a stock X1C. Applied once, as a translation on the group holding the
   toolpath.
 
+## The generated settings UI (M6)
+
+`apps/web/src/state/settings.ts` + `apps/web/src/ui/SettingsScreen.tsx`, over
+`apps/api/src/settings/` and `apps/api/src/engine/orca/overrides.ts`.
+
+Forms are rendered from M2's config schema — no option list is maintained by hand, so a
+version bump regenerates the UI. **751 options, 100 % of what `PrintConfig.cpp` defines.**
+
+**The information architecture, because 751 fields do not fit a 390 px column.** Four
+tools, none of which is a tree:
+
+- **Search** over label, raw config key, group and tooltip — the only workable path to the
+  long tail. The key is printed under every field, so someone who knows `layer_height` need
+  not guess what Orca calls it.
+- **A disclosure level**, `simple ⊂ advanced ⊂ expert`, mirroring upstream's
+  `ConfigOptionMode` (186 / 516 / 18 options). `develop` — upstream's hidden debug tier,
+  31 options — is never rendered, at any level. A search that finds nothing because of the
+  level says how many it is hiding and offers one tap to raise it.
+- **Group drill-down**, one category at a time, full-screen with a Back row. The 11
+  upstream `category` values come first; the 363 non-SLA options that have none (upstream
+  only categorises the _print_ settings pages) are filed under the preset that supplies
+  them — Printer / Filament / Process — which is read off the resolved presets, not
+  guessed. The 76 SLA options and `extruder_printable_area` (`coPointsGroups`, the one
+  option PROFILE-PIPELINE.md names as not generically renderable) are excluded.
+- **"Show only what I changed"**, which deliberately ignores the disclosure level: an
+  override you cannot see is how this screen would lie.
+
+**"Modified" is measured against the preset, never against the compiled-in default.**
+`GET /settings/resolved` returns the flattened machine ⊕ process ⊕ filament merge with a
+per-key note of which preset supplied it. A key that is _absent_ is one the CLI would
+silently fall back to its built-in value for, and the field says so in as many words —
+that distinction is SPEC deviation #1 stated as a sentence on screen.
+
+**Diff-and-override: only the changed keys travel, as CLI flags.** No profile file is
+written, here or on the server; the settings priority puts a flag above `--load-settings`,
+which is why one flag can change one key without disturbing the preset. Two measured
+rules make the serialiser non-obvious, and both have regression tests:
+
+- **One argv token per override, always `--key=value`** (SPEC deviations #23, #26).
+  `--enable-arc-fitting 0` is _not_ a rejected value — it exits 253 with `No such file: 0`,
+  because every boolean key is a switch and the `0` becomes a positional model path.
+- **Vectors join with `,`, string vectors with `;`** (deviation #25). The wrong separator
+  is silent for numbers: `--nozzle-temperature=235;240` keeps only `235`, at exit 0.
+
+**Named user presets are ours.** A saved set is a _diff_ plus the catalog presets it was
+captured against, stored in this application's SQLite file
+(`GET/POST/PUT/DELETE /settings/presets`). Nothing is ever written into OrcaSlicer's
+`resources/profiles` tree — the acceptance test snapshots that tree and asserts it is
+byte-identical after a slice with overrides.
+
 Acceptance, measured rather than eyeballed:
 
 ```bash
@@ -314,6 +366,27 @@ The test also decodes the same byte range itself and checks the drawn geometry e
 G-code plus `extruder_offset` — 1.79 mm adrift if the correction were dropped.
 
 Format, byte layout and the server half: [`docs/GCODE-PREVIEW-FORMAT.md`](docs/GCODE-PREVIEW-FORMAT.md).
+
+And M6's settings overrides, the same way:
+
+```bash
+docker compose run --rm integration          # slices the same box twice and diffs the G-code
+docker compose up -d api
+node test/e2e/settings.mjs                   # 390x844, touch emulation, a real slice
+```
+
+`apps/api/src/settings.integration.test.ts` proves an override reaches the output for one
+key of every widget family — float, enum, boolean **on and off**, and a per-extruder array
+— by reading the value back out of the G-code's own resolved config block and checking the
+toolpaths changed with it:
+
+| override                       | preset     | effect on a 12 mm box                       |
+| ------------------------------ | ---------- | ------------------------------------------- |
+| `layer_height=0.28`            | 0.2        | fewer `; CHANGE_LAYER`s, Z steps of 0.28    |
+| `sparse_infill_pattern=gyroid` | crosshatch | > 200 lines of toolpath difference          |
+| `infill_combination=1` (on)    | 0          | whole infill passes removed                 |
+| `enable_arc_fitting=0` (off)   | 1          | G2/G3 moves 107 → 8                         |
+| `nozzle_temperature=235,235`   | 220        | all six `M104`/`M109` commands move to S235 |
 
 ## Working on the code
 

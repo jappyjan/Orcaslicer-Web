@@ -62,11 +62,39 @@ export type ModelRef = { source: 'upload'; filename: string } | { source: 'libra
 /** Volume roles the engine understands. `NegativeVolume`/`ParameterModifier` are the M4+ hook. */
 export type ObjectSubtype = 'ModelPart' | 'NegativeVolume' | 'ParameterModifier';
 
+/**
+ * A linear transform applied to a model's own file coordinates before it is placed.
+ *
+ * Nine numbers, row-major 3×3 — rotation composed with scale, no translation (the
+ * translation is `posX`/`posY`/`posZ`). A plate object's world geometry is therefore
+ * exactly `transform · vertex + pos`, and that identity is what lets the plater predict
+ * where the engine will put things: see `apps/web/src/state/plate.ts`.
+ *
+ * It exists because the engine's plate description carries positions and nothing else —
+ * no rotation, no scale. Anything but a pure translation has to be baked into the
+ * geometry before the engine sees it, which the API does while staging the model
+ * (`apps/api/src/geometry/`). Undefined means identity, and identity means the library
+ * blob is staged untouched.
+ */
+export type ModelTransform = [
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+];
+
 /** One object (possibly several copies of it) on a plate. */
 export interface PlateObject {
   model: ModelRef;
   /** Number of copies. Default 1. */
   count?: number;
+  /** Rotation ∘ scale, baked into the geometry server-side. Omit for identity. */
+  transform?: ModelTransform;
   /** 1-based filament slot indices. Length must be 1 or `count`. */
   filaments?: number[];
   /** Objects sharing a value are merged into one composed model. */
@@ -124,6 +152,68 @@ export interface JobRequest {
    */
   overrides?: Record<string, string | number | boolean>;
   input: JobInput;
+}
+
+// ---------------------------------------------------------------------------
+// The plate (M4)
+// ---------------------------------------------------------------------------
+
+/** A point on the build plate, in millimetres, in the printer's own coordinates. */
+export type Point2 = [number, number];
+
+/**
+ * The build plate to draw, straight out of the selected machine preset.
+ *
+ * Bed size is never assumed or hardcoded: it comes from `printable_area` /
+ * `printable_height` in the fully resolved machine profile, which is exactly the shape
+ * the slicer itself will pack into. (SPEC deviation #1 is the reason "fully resolved"
+ * carries weight here — an unflattened preset reports a 200×200 bed for a 256×256
+ * printer, and both the plater and the slicer would be wrong in the same direction.)
+ */
+export interface BedSpec {
+  /** Printer model name, for the plater's heading. */
+  printerModel: string | null;
+  /** Machine preset the numbers came from. */
+  preset: PresetRef;
+  /** The printable polygon, usually a rectangle. Millimetres. */
+  printableArea: Point2[];
+  /** Maximum Z, millimetres. */
+  printableHeight: number;
+  /** A region of the bed that cannot be used — the nozzle-wipe pad on a Bambu, say. */
+  excludeArea: Point2[];
+  /**
+   * `extruder_offset` of the first extruder, millimetres.
+   *
+   * MEASURED: G-code coordinates are plate coordinates minus this (a BBL X1C ships
+   * `0x2`, so an object placed at y = 120 extrudes at y = 118). Nothing in the plater
+   * needs it, but anything that compares plate positions with G-code — the M5 preview,
+   * and M4's own acceptance test — does.
+   */
+  extruderOffset: Point2;
+}
+
+/** `POST /plater/arrange` — lay a plate out with the engine's own packer. */
+export interface ArrangeRequestBody {
+  printer: PresetRef;
+  process: PresetRef;
+  /** One entry per placed instance; there is no `count` here. */
+  objects: Array<{ model: ModelRef; transform?: ModelTransform }>;
+}
+
+/**
+ * Where the engine decided each instance goes.
+ *
+ * Same convention as everything else on this boundary: the placed geometry is
+ * `rotation · vertex + position`, with `position` ready to be sent straight back as
+ * `posX`/`posY`/`posZ`.
+ */
+export interface ArrangedInstance {
+  position: [number, number, number];
+  rotation: ModelTransform;
+}
+
+export interface ArrangeResponse {
+  instances: ArrangedInstance[];
 }
 
 // ---------------------------------------------------------------------------

@@ -28,7 +28,7 @@ import fastifyStatic from '@fastify/static';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 /** Path prefixes the API owns. Everything else belongs to the single-page app. */
-const API_PREFIXES = ['/jobs', '/models', '/catalog', '/healthz'];
+const API_PREFIXES = ['/jobs', '/models', '/catalog', '/plater', '/healthz'];
 
 /**
  * `<api>/dist/http/static.js` → `apps/web/dist`.

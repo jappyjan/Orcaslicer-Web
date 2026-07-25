@@ -26,13 +26,15 @@
 
 import { spawn } from 'node:child_process';
 import { execFile } from 'node:child_process';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { PlateStats, SliceStats } from '@orca-web/shared';
 import { SliceError } from '../errors.js';
 import type {
+  ArrangeJob,
+  ArrangeResult,
   EngineArtifact,
   EngineInfo,
   SliceArtifacts,
@@ -53,7 +55,9 @@ import {
   parseSliceInfo,
   patchProjectPrinterModel,
   readArchive,
+  readObjectPlacements,
   verifyGcodeChecksum,
+  writePlateThumbnail,
 } from './threemf.js';
 
 const execFileAsync = promisify(execFile);
@@ -350,6 +354,164 @@ export class OrcaCliEngine implements SlicerEngine {
       await pipe.close().catch(() => undefined);
       buffer.close();
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Arranging
+  // -------------------------------------------------------------------------
+
+  /**
+   * `--arrange 1`, and then read back where things landed.
+   *
+   * MEASURED on 2.4.2, and the reason this is not simply "add `--arrange 1` to the slice":
+   *
+   *  - **`--arrange 1` and `--load-assemble-list` are mutually exclusive.** Combining them
+   *    fails immediately with `-2` (`CLI_INVALID_PARAMS`, shell status 254) and writes no
+   *    output, with or without `--slice`. Arranging therefore takes positional model paths
+   *    — one per *instance*, since a plate description's `count` has no equivalent here.
+   *  - The machine profile still has to be passed: the bed it packs into comes from
+   *    `printable_area` / `bed_exclude_area`, and an unflattened profile would silently
+   *    pack into the compiled-in 200×200 default (deviation #1).
+   *  - No `--slice`, no `--min-save`: this exports a project 3MF purely so the placements
+   *    can be read out of it, and `--min-save` would drop the meshes' own `3D/Objects`
+   *    entries (deviation #5) that the placement maths uses.
+   */
+  async arrange(job: ArrangeJob, options: { signal?: AbortSignal } = {}): Promise<ArrangeResult> {
+    if (job.objects.length === 0) return { placements: [] };
+    assertFlattened(job.machine);
+    assertFlattened(job.process);
+
+    const dir = join(job.workDir, 'arrange');
+    await mkdir(dir, { recursive: true });
+    const machinePath = join(dir, 'machine.json');
+    const processPath = join(dir, 'process.json');
+    await writeFile(machinePath, JSON.stringify(job.machine.values, null, 2));
+    await writeFile(processPath, JSON.stringify(job.process.values, null, 2));
+
+    // Staged under unique names so the placements can be matched back to their instance:
+    // the export identifies objects by file name, and two copies of one model would
+    // otherwise be indistinguishable.
+    const names = job.objects.map((_, index) => `${index}.stl`);
+    await Promise.all(
+      job.objects.map(async (object, index) =>
+        copyFile(object.path, join(dir, names[index] as string)),
+      ),
+    );
+
+    const exportPath = join(dir, 'arranged.3mf');
+    const args = [
+      '--arrange',
+      '1',
+      '--load-settings',
+      `${machinePath};${processPath}`,
+      '--allow-newer-file',
+      '--debug',
+      '2',
+      '--export-3mf',
+      exportPath,
+      ...names.map((name) => join(dir, name)),
+    ];
+
+    const outcome = await this.runOnce(args, dir, job.wallClockMs, options.signal);
+    if (outcome.status !== 0) {
+      throw (
+        matchDiagnostic(outcome.output) ??
+        sliceErrorForExit(outcome.status ?? -1, outcome.output.slice(-4_000))
+      );
+    }
+    // Deviation #2's durable rule: the exit status alone is never a success signal.
+    const entries = await readArchive(exportPath).catch(() => undefined);
+    if (entries === undefined) {
+      throw new SliceError('EXPORT_FAILED', 'The plate could not be arranged.', {
+        hint: 'Try moving the objects yourself.',
+        retryable: true,
+        detail: outcome.output.slice(-4_000),
+      });
+    }
+
+    const byName = new Map(
+      readObjectPlacements(entries).map((placement) => [placement.name, placement]),
+    );
+    return {
+      placements: names.map((name, index) => {
+        const placement = byName.get(name);
+        if (!placement) {
+          throw new SliceError('EXPORT_FAILED', 'The arranged plate came back incomplete.', {
+            retryable: true,
+            detail: `no placement for object ${index} (${name}); got ${[...byName.keys()].join(', ')}`,
+          });
+        }
+        return { position: placement.position, rotation: placement.rotation };
+      }),
+    };
+  }
+
+  /** Put a client-rendered preview into the archive. See threemf.ts and deviation #5. */
+  async embedPlateThumbnail(artifactPath: string, plate: number, png: Uint8Array): Promise<number> {
+    const { bytes } = await writePlateThumbnail(artifactPath, plate, png);
+    return bytes;
+  }
+
+  /**
+   * Run the binary once and collect its output. Used by the short, non-streaming
+   * invocations; `slice()` drives its own child because it also owns a FIFO reader, a
+   * progress buffer and a cancellation contract.
+   */
+  private async runOnce(
+    args: string[],
+    cwd: string,
+    wallClockMs: number,
+    signal: AbortSignal | undefined,
+  ): Promise<{ status: number | null; output: string }> {
+    return new Promise((resolve, reject) => {
+      // cwd is the sandbox: every invocation drops result.json where it starts (#9).
+      const child = spawn(this.config.binary, args, {
+        cwd,
+        detached: true,
+        env: this.childEnv(cwd),
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let output = '';
+      const collect = (chunk: Buffer): void => {
+        if (output.length < LOG_LIMIT_BYTES) output += chunk.toString('utf8');
+      };
+      child.stdout?.on('data', collect);
+      child.stderr?.on('data', collect);
+
+      const kill = (): void => {
+        if (child.pid === undefined) return;
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch {
+          child.kill('SIGKILL');
+        }
+      };
+      const timer = setTimeout(kill, wallClockMs);
+      timer.unref();
+      signal?.addEventListener('abort', kill, { once: true });
+
+      child.once('error', (error) => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', kill);
+        reject(
+          new SliceError('ENVIRONMENT_ERROR', 'The slicer could not be started.', {
+            hint: 'This is a server-side problem, not a problem with your model.',
+            retryable: true,
+            detail: String(error),
+            cause: error,
+          }),
+        );
+      });
+      child.once('exit', (status) => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', kill);
+        if (signal?.aborted === true) {
+          reject(new SliceError('CANCELLED', 'The job was cancelled.', { retryable: true }));
+          return;
+        }
+        resolve({ status, output });
+      });
+    });
   }
 
   // -------------------------------------------------------------------------

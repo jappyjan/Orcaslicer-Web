@@ -38,6 +38,17 @@ const STATE_LABELS: Record<string, string> = {
   interrupted: 'Interrupted by a server restart',
 };
 
+/**
+ * How far the plate preview has got (M4).
+ *
+ * The slicer cannot render one — it needs OpenGL and the container has no display server
+ * — so the plater's WebGL view renders it and it is written into the `.gcode.3mf` after
+ * the slice finishes (SPEC deviation #5: with `--min-save` the archive has no
+ * `Metadata/plate_N.png` at all). Downloading a second earlier would fetch the archive
+ * without it, so the state is shown rather than hidden.
+ */
+export type PreviewState = 'none' | 'uploading' | 'done' | 'failed';
+
 export function JobScreen({
   model,
   progress,
@@ -46,6 +57,7 @@ export function JobScreen({
   onSliceAgain,
   onBack,
   cancelling,
+  preview = 'none',
 }: {
   model: ProgressModel;
   progress: { name: string; subtitle: string };
@@ -54,6 +66,7 @@ export function JobScreen({
   onSliceAgain: () => void;
   onBack: () => void;
   cancelling: boolean;
+  preview?: PreviewState;
 }) {
   const active = isActive(model);
   const quiet = isQuiet(model, now);
@@ -126,7 +139,7 @@ export function JobScreen({
 
         {model.error ? <ErrorNotice error={model.error} testId="job-error" /> : null}
 
-        {model.job ? <Results job={model.job} /> : null}
+        {model.job ? <Results job={model.job} preview={preview} /> : null}
       </main>
 
       <footer className="sticky bottom-0 space-y-2 border-t border-line bg-ink/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur">
@@ -179,12 +192,12 @@ function ProgressBar({
   );
 }
 
-function Results({ job }: { job: JobSummary }) {
+function Results({ job, preview }: { job: JobSummary; preview: PreviewState }) {
   const stats = job.stats;
   return (
     <>
       {stats ? <StatsPanel stats={stats} /> : null}
-      <Downloads jobId={job.id} artifacts={job.artifacts} />
+      <Downloads jobId={job.id} artifacts={job.artifacts} preview={preview} />
     </>
   );
 }
@@ -257,7 +270,22 @@ const ARTIFACT_LABELS: Record<ArtifactSummary['role'], (artifact: ArtifactSummar
   gcode: (artifact) => (artifact.plate === undefined ? 'G-code' : `Plate ${artifact.plate} G-code`),
 };
 
-function Downloads({ jobId, artifacts }: { jobId: string; artifacts: readonly ArtifactSummary[] }) {
+const PREVIEW_LABELS: Record<PreviewState, string | null> = {
+  none: null,
+  uploading: 'Adding the plate preview to the project file…',
+  done: 'Plate preview included.',
+  failed: 'The plate preview could not be added; the G-code is unaffected.',
+};
+
+function Downloads({
+  jobId,
+  artifacts,
+  preview,
+}: {
+  jobId: string;
+  artifacts: readonly ArtifactSummary[];
+  preview: PreviewState;
+}) {
   if (artifacts.length === 0) return null;
   return (
     <section className="rounded-xl border border-line bg-surface p-4" data-testid="downloads">
@@ -265,6 +293,16 @@ function Downloads({ jobId, artifacts }: { jobId: string; artifacts: readonly Ar
       <p className="mb-3 text-sm text-muted">
         Bambu Lab printers want the project file; most others want the plain G-code.
       </p>
+      {PREVIEW_LABELS[preview] ? (
+        <p
+          className="mb-3 text-sm text-muted"
+          data-testid="preview-status"
+          data-state={preview}
+          role="status"
+        >
+          {PREVIEW_LABELS[preview]}
+        </p>
+      ) : null}
       <ul className="space-y-2">
         {artifacts.map((artifact) => (
           <li key={artifact.name}>

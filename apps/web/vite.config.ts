@@ -12,7 +12,7 @@ import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
 /** Every path the API owns. Anything else is the SPA. */
-const API_PATHS = ['/catalog', '/jobs', '/models', '/healthz'];
+const API_PATHS = ['/catalog', '/jobs', '/models', '/plater', '/healthz'];
 
 const target = process.env.VITE_API_TARGET ?? 'http://127.0.0.1:8080';
 

@@ -15,7 +15,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rename, writeFile } from 'node:fs/promises';
 import type { FilamentUsage, PlateStats } from '@orca-web/shared';
 import { unzipSync, zipSync } from 'fflate';
 
@@ -191,4 +191,206 @@ export async function patchProjectPrinterModel(
 
   await writeFile(destination, zipSync(entries, { level: 6 }));
   return { patched: true, from: current, to: printerModel };
+}
+
+// ---------------------------------------------------------------------------
+// Placement — reading back what `--arrange 1` decided
+// ---------------------------------------------------------------------------
+
+/** Nine numbers, row-major 3×3, plus a translation — the plate description's convention. */
+export interface ObjectPlacement {
+  /** `<metadata key="name">` from `model_settings.config`, i.e. the staged file name. */
+  name: string;
+  position: [number, number, number];
+  rotation: [number, number, number, number, number, number, number, number, number];
+}
+
+/** 3MF's row-vector matrix: `v' = v · M`, twelve numbers, translation last. */
+type Row12 = number[];
+
+const ROW12_IDENTITY: Row12 = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
+
+function row12(value: string | undefined): Row12 {
+  if (value === undefined) return [...ROW12_IDENTITY];
+  const parts = value.trim().split(/\s+/).map(Number);
+  return parts.length === 12 && parts.every((n) => Number.isFinite(n))
+    ? parts
+    : [...ROW12_IDENTITY];
+}
+
+/** `inner` applied first, then `outer` — both in 3MF's row-vector convention. */
+function composeRow12(outer: Row12, inner: Row12): Row12 {
+  const out: number[] = [];
+  for (let row = 0; row < 3; row += 1) {
+    for (let column = 0; column < 3; column += 1) {
+      let sum = 0;
+      for (let k = 0; k < 3; k += 1)
+        sum += (inner[row * 3 + k] ?? 0) * (outer[k * 3 + column] ?? 0);
+      out.push(sum);
+    }
+  }
+  for (let column = 0; column < 3; column += 1) {
+    let sum = outer[9 + column] ?? 0;
+    for (let k = 0; k < 3; k += 1) sum += (inner[9 + k] ?? 0) * (outer[k * 3 + column] ?? 0);
+    out.push(sum);
+  }
+  return out;
+}
+
+/**
+ * Where each object ended up in an exported project 3MF.
+ *
+ * MEASURED against 2.4.2. The chain that has to be unwound is:
+ *
+ *   - `3D/3dmodel.model` holds `<build><item objectid transform>` — the instance.
+ *   - each object is a `<components><component transform>` pointing at the mesh, and that
+ *     transform is the *centring* offset applied when the file was loaded.
+ *   - `Metadata/model_settings.config` records the same centring as `source_offset_x/y/z`,
+ *     and the mesh itself was written out already shifted by it.
+ *
+ * So the mesh vertex the file on disk contained is `f`, the exported mesh holds
+ * `f − source_offset`, and the placed vertex is `(f − source_offset) · component · item`.
+ * Folding that back gives a transform in the plate description's own terms —
+ * `rotation · f + position` — which is what makes an arranged layout something the client
+ * can hand straight back as `pos_x`/`pos_y`/`pos_z`.
+ */
+export function readObjectPlacements(entries: ArchiveEntries): ObjectPlacement[] {
+  const model = entries['3D/3dmodel.model'];
+  if (!model) return [];
+  const xml = decode(model);
+  const settings = entries['Metadata/model_settings.config'];
+  const meta = settings ? parseObjectMetadata(decode(settings)) : new Map();
+
+  // objectid -> the centring transform of its single component (if it has one)
+  const centring = new Map<string, Row12>();
+  const objectRe = /<object\b([^>]*)>([\s\S]*?)<\/object>/g;
+  let match = objectRe.exec(xml);
+  while (match !== null) {
+    const id = attributes(match[1] as string).id;
+    const component = /<component\b([^>]*)\/?>/.exec(match[2] as string);
+    if (id !== undefined && component) {
+      centring.set(id, row12(attributes(component[1] as string).transform));
+    }
+    match = objectRe.exec(xml);
+  }
+
+  const placements: ObjectPlacement[] = [];
+  const itemRe = /<item\b([^>]*)\/?>/g;
+  match = itemRe.exec(xml);
+  while (match !== null) {
+    const item = attributes(match[1] as string);
+    const id = item.objectid;
+    if (id !== undefined) {
+      const composed = composeRow12(row12(item.transform), centring.get(id) ?? [...ROW12_IDENTITY]);
+      const info = meta.get(id);
+      const source = info?.sourceOffset ?? [0, 0, 0];
+      // position = translation − source_offset · linear
+      const position: [number, number, number] = [0, 1, 2].map((column) => {
+        let value = composed[9 + column] as number;
+        for (let k = 0; k < 3; k += 1) {
+          value -= (source[k] as number) * (composed[k * 3 + column] as number);
+        }
+        return value;
+      }) as [number, number, number];
+      placements.push({
+        name: info?.name ?? id,
+        position,
+        // Transposed: 3MF multiplies a row vector from the left, we multiply a column
+        // vector from the right.
+        rotation: [
+          composed[0] as number,
+          composed[3] as number,
+          composed[6] as number,
+          composed[1] as number,
+          composed[4] as number,
+          composed[7] as number,
+          composed[2] as number,
+          composed[5] as number,
+          composed[8] as number,
+        ],
+      });
+    }
+    match = itemRe.exec(xml);
+  }
+  return placements;
+}
+
+function parseObjectMetadata(
+  xml: string,
+): Map<string, { name: string; sourceOffset: [number, number, number] }> {
+  const out = new Map<string, { name: string; sourceOffset: [number, number, number] }>();
+  const objectRe = /<object\b([^>]*)>([\s\S]*?)<\/object>/g;
+  let match = objectRe.exec(xml);
+  while (match !== null) {
+    const id = attributes(match[1] as string).id;
+    const body = match[2] as string;
+    if (id !== undefined) {
+      const value = (key: string): string | undefined =>
+        new RegExp(`<metadata key="${key}" value="([^"]*)"`).exec(body)?.[1];
+      out.set(id, {
+        name: value('name') ?? id,
+        sourceOffset: [
+          numberOr(value('source_offset_x'), 0),
+          numberOr(value('source_offset_y'), 0),
+          numberOr(value('source_offset_z'), 0),
+        ],
+      });
+    }
+    match = objectRe.exec(xml);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Thumbnails
+// ---------------------------------------------------------------------------
+
+export function plateThumbnailEntry(plate: number): string {
+  return `Metadata/plate_${plate}.png`;
+}
+
+/** A PNG, by its signature. The rewrite endpoint accepts client bytes; this is the gate. */
+export function isPng(data: Uint8Array): boolean {
+  const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  return data.length > 8 && signature.every((byte, index) => data[index] === byte);
+}
+
+/**
+ * Put a plate preview into a `.gcode.3mf`.
+ *
+ * SPEC: "the blank thumbnail is our problem to solve" — the slicer needs OpenGL to render
+ * one and there is no display server. VERIFIED DEVIATION #5 sharpens it: with `--min-save`
+ * the member is **absent**, not blank, so this adds an entry rather than replacing one,
+ * and `[Content_Types].xml` has to learn about the `png` extension at the same time or
+ * the archive stops being a valid 3MF.
+ *
+ * Rewrites in place via a temporary file: a half-written archive must never be visible to
+ * a download that arrives mid-rewrite.
+ */
+export async function writePlateThumbnail(
+  archivePath: string,
+  plate: number,
+  png: Uint8Array,
+): Promise<{ bytes: number; replaced: boolean }> {
+  if (!isPng(png)) throw new Error('the thumbnail is not a PNG');
+  const entries = await readArchive(archivePath);
+  const name = plateThumbnailEntry(plate);
+  const replaced = entries[name] !== undefined;
+  entries[name] = png;
+
+  const types = entries['[Content_Types].xml'];
+  if (types) {
+    const xml = decode(types);
+    if (!/Extension="png"/i.test(xml)) {
+      entries['[Content_Types].xml'] = new TextEncoder().encode(
+        xml.replace(/<\/Types>/i, '<Default Extension="png" ContentType="image/png"/></Types>'),
+      );
+    }
+  }
+
+  const temporary = `${archivePath}.thumb`;
+  const zipped = zipSync(entries, { level: 6 });
+  await writeFile(temporary, zipped);
+  await rename(temporary, archivePath);
+  return { bytes: zipped.byteLength, replaced };
 }

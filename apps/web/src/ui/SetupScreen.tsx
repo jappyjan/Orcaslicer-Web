@@ -27,6 +27,9 @@ export function SetupScreen({
   error,
   onDismissError,
   notice,
+  onOpenPlater,
+  plateCount,
+  plateDetail,
 }: {
   catalog: Catalog;
   selection: Selection;
@@ -37,6 +40,9 @@ export function SetupScreen({
   error: ApiError | null;
   onDismissError: () => void;
   notice: string | null;
+  onOpenPlater: () => void;
+  plateCount: number;
+  plateDetail: string;
 }) {
   const missing = missingStep(selection);
   const printer = selection.printer;
@@ -130,6 +136,24 @@ export function SetupScreen({
           onClick={() => onOpen('filament')}
           disabled={selection.nozzle === null}
           testId="row-filament"
+        />
+
+        {/*
+          The plate (M4). Disabled until there is something to put on it and a printer to
+          put it on: the bed is drawn from the machine preset's own `printable_area`, so
+          without a printer there is no plate to show.
+        */}
+        <Row
+          label="Plate"
+          value={
+            plateCount === 0
+              ? 'Nothing placed yet'
+              : `${plateCount} object${plateCount === 1 ? '' : 's'}`
+          }
+          detail={plateDetail}
+          onClick={onOpenPlater}
+          disabled={plateCount === 0}
+          testId="row-plate"
         />
       </main>
 

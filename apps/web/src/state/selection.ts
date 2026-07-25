@@ -9,7 +9,7 @@
  * {@link withNozzle} do that rather than leaving a stale preset that would 400 on submit.
  */
 
-import type { JobRequest, ModelSummary, PresetRef } from '@orca-web/shared';
+import type { JobRequest, ModelSummary, PlateSpec, PresetRef } from '@orca-web/shared';
 import type { PresetOption, PrinterOption } from '../api/catalog.ts';
 
 export interface Selection {
@@ -82,11 +82,13 @@ export function isComplete(selection: Selection): boolean {
  *  - the model ref is always `{ source: 'library', id }`. The file was uploaded once via
  *    `POST /models`; re-slicing sends this descriptor and nothing else.
  *
- * The single-object, auto-arranged plate is M4's seam: the plater will replace
- * `objects` with one entry per placed instance and set `arrange: false` with real
- * `posX`/`posY`, and nothing else in this function changes.
+ * M4 came through that seam exactly as planned: pass a {@link PlateSpec} and the plate
+ * replaces the single auto-arranged object with one entry per placed instance,
+ * `arrange: false` and real `posX`/`posY`/`posZ`. Nothing above this function changed.
+ * Without one — no bed loaded, no plater visited — the M3 behaviour still applies and the
+ * engine decides where the object goes.
  */
-export function buildDescriptor(selection: Selection): JobRequest {
+export function buildDescriptor(selection: Selection, plate?: PlateSpec): JobRequest {
   const { model, printer, process, filament } = selection;
   const nozzle = selectedNozzle(selection);
   if (!model || !printer || !nozzle || !process || !filament) {
@@ -107,9 +109,9 @@ export function buildDescriptor(selection: Selection): JobRequest {
     input: {
       kind: 'plates',
       plates: [
-        {
+        plate ?? {
           index: 1,
-          // No plater yet (M4), so the engine decides where the object goes. This is also
+          // No plate to serialise: the engine decides where the object goes. This is also
           // the only printer-agnostic choice: bed centres differ per machine, and
           // `pos_x`/`pos_y` are ignored unless `need_arrange` is false anyway.
           arrange: true,

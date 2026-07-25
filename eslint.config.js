@@ -10,6 +10,10 @@ export default tseslint.config(
   {
     ignores: [
       '**/node_modules/**',
+      // Agent worktree checkouts (already gitignored). They contain a second copy of the
+      // whole repo, which gives the typed linter two candidate tsconfig roots and fails
+      // every file with a parser error.
+      '.claude/**',
       '**/dist/**',
       '**/build/**',
       '**/coverage/**',
@@ -58,6 +62,12 @@ export default tseslint.config(
     // scrappy in ways the TypeScript sources are not.
     files: ['**/*.mjs', '**/*.js'],
     ...tseslint.configs.disableTypeChecked,
+  },
+  {
+    // The browser acceptance test runs in Node but its `page.evaluate` bodies run in the
+    // page, so both sets of globals are legitimate in the same file.
+    files: ['test/e2e/**/*.mjs'],
+    languageOptions: { globals: { ...globals.node, ...globals.browser } },
   },
   prettier,
 );

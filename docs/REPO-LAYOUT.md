@@ -19,16 +19,19 @@ parallel structure.
 │   ├── api/                 # @orca-web/api  — Fastify, job orchestration        (M1)
 │   │   └── src/
 │   │       ├── engine/      #   the SlicerEngine port + orca/ adapter
+│   │       ├── geometry/    #   mesh IO: bake a rotation into an STL before staging  (M4)
 │   │       ├── queue/       #   the JobQueue port + in-process / bullmq adapters
 │   │       ├── profiles/    #   the ProfileResolver port + the catalog-backed adapter
 │   │       ├── catalog/     #   start-up load + response/ETag caching for GET /catalog
 │   │       ├── storage/     #   SQLite metadata, content-addressed models, artefacts
 │   │       ├── jobs/        #   orchestration and the SSE event bus
 │   │       └── http/        #   Fastify routes, error mapping, static.ts serves the client
+│   │           └── routes/  #     one module per feature-sized group of routes       (M4)
 │   └── web/                 # @orca-web/web  — React + Vite + Tailwind             (M3)
 │       └── src/
 │           ├── api/        #   the API client: error contract, catalog, jobs + SSE
-│           ├── state/      #   pure logic: progress model, selection → job descriptor
+│           ├── state/      #   pure logic: progress model, selection → descriptor, the plate
+│           ├── three/      #   the WebGL plater: scene, touch gestures, mesh loading (M4)
 │           └── ui/         #   one component per screen; primitives.tsx = touch vocabulary
 │
 ├── packages/
@@ -43,6 +46,7 @@ parallel structure.
 │   └── check-cli-help.sh
 │
 ├── test/
+│   ├── e2e/                 # browser acceptance: a real phone viewport, a real slice (M4)
 │   ├── fixtures/            # committed test inputs (cube20.stl, 684 bytes)
 │   └── golden/              # byte-exact expected outputs (orca-slicer --help)
 │
@@ -141,6 +145,26 @@ written by `tools/extractors` in the Dockerfile's `generate` stage and read once
 start-up (`ORCA_GENERATED_DIR`). It is part of the image, not of the deployment: it
 never changes without the OrcaSlicer version changing, needs no volume, and is why the
 running container needs no network. 26 MB for 2.4.2.
+
+**`apps/api/src/geometry/` sits above the engine boundary, not inside `engine/orca/`.**
+M4 needed rotation and scale, and the engine's plate description carries positions and
+nothing else — so anything but a translation has to be baked into the geometry before the
+slicer sees it. That is a property of _the plate description_, not of OrcaSlicer, and every
+CLI-driven slicer in the family shares it. The module reads STL and 3MF meshes, applies a
+3×3, and writes a binary STL with real facet normals (SPEC deviation #11); `jobs/` calls it
+while staging models into the sandbox, so the library blob is never touched.
+
+**`apps/web/src/three/` is the only place three.js appears.** `state/plate.ts` — which the
+job descriptor is built from — deliberately does not import it, so the 600 kB renderer stays
+off the path between opening the app and slicing; it is loaded with the plater screen
+instead. The Euler convention `plate.ts` writes out by hand is asserted against three's own
+in `plate.test.ts`, which is what makes that safe.
+
+**`test/e2e/` is not a vitest project.** It needs a browser and a running container, and it
+is the milestone's acceptance criterion rather than a unit test: `node test/e2e/plater.mjs`
+drives the app at 390 × 844 with touch emulation, slices for real, and parses the extrusion
+coordinates back out of the G-code. Keeping it out of `npm test` keeps `npm test` runnable
+with no Docker and no browser.
 
 **`test/` at the root, not per-package.** `test/fixtures/cube20.stl` and
 `test/golden/orca-slicer-help.txt` describe the _container_, not any one workspace, and

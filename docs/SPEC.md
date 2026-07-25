@@ -282,6 +282,38 @@ touches the CLI.
     own typed errors. A stderr diagnostic match should beat the exit-code table
     (that is how the `G92 E0` / relative-extruder case is detected).
 
+### Added in M4 — measured while building the plater
+
+13. **`--arrange 1` cannot be combined with `--load-assemble-list`.** The run fails
+    immediately with `-2` (`CLI_INVALID_PARAMS`, shell status 254) and produces no
+    output, with or without `--slice`, with or without `--load-settings`. Arranging
+    therefore takes **positional model paths** — one per *instance*, since the assemble
+    list's `count` has no equivalent — and the placements are read back out of the
+    exported project 3MF. `apps/api/src/engine/orca/orca-cli-engine.ts#arrange` does this.
+14. **`pos_x`/`pos_y`/`pos_z` translate the model's own file coordinates.** They do
+    *not* place the object's centre. MEASURED: a 20 mm box whose STL spans 0…20, sent at
+    `pos_x = 80`, extrudes across x 80…100; an STL that spans 100…120 sent at the same
+    value lands at 180…200. Every plater in existence talks in centres, so the conversion
+    (`centre − ½·bbox`) is real work and getting it backwards offsets every object by
+    half its size — plausibly, and silently.
+15. **G-code coordinates are plate coordinates minus `extruder_offset`.** A stock BBL
+    X1C ships `extruder_offset = ["0x2"]`, so an object centred at y = 120 on the plate
+    extrudes at y = 118. Nothing in the plate description applies this; the firmware
+    does. **M5's preview must apply the same offset** or the toolpaths will sit 2 mm off
+    the objects they belong to.
+16. **An object whose underside is above the bed fails the slice outright** — exit
+    `-100` (`CLI_SLICING_ERROR`, shell status 156), not a warning and not an auto-drop.
+    So "drop to bed" is not a convenience: a plater must always send a `pos_z` that puts
+    the geometry's lowest point at z = 0.
+17. **Filament slot 2 on a single-nozzle machine is rejected**, with
+    `Grouping error: PLA can not be placed in the right nozzle` and exit `-100`. 2.4.2
+    reads a second slot as a second *nozzle*, not as an AMS slot. Multi-material plates
+    need more than an index in `filaments`.
+18. Deviation #5 re-confirmed on the same binary: a `--min-save` archive has **12
+    members and no `Metadata/plate_N.png`**. The rewrite therefore *adds* the member —
+    and has to add `<Default Extension="png">` to `[Content_Types].xml` at the same time,
+    or the result stops being a valid 3MF.
+
 ### Environment notes for local development
 - The Docker daemon is not running at session start in the dev container; start it
   with `nohup dockerd &` (sandbox disabled).

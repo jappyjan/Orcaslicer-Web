@@ -143,6 +143,51 @@ export interface EngineInfo {
 }
 
 // ---------------------------------------------------------------------------
+// Arranging
+// ---------------------------------------------------------------------------
+
+/**
+ * One instance to lay out. Geometry and nothing else: arranging does not care which
+ * filament an object prints in, and an engine that needed to know would be telling us
+ * the abstraction is wrong.
+ */
+export interface ArrangeObject {
+  /** Absolute path, readable by the engine. Already in its final orientation. */
+  path: string;
+}
+
+export interface ArrangeJob {
+  id: string;
+  /** A disposable directory, created and removed by the caller (hard constraint #4). */
+  workDir: string;
+  objects: ArrangeObject[];
+  /** Flattened, as everywhere else — the bed size lives in here (SPEC deviation #1). */
+  machine: ResolvedProfile;
+  process: ResolvedProfile;
+  /** Wall-clock ceiling. Arranging is fast; this is a guard, not a budget. */
+  wallClockMs: number;
+}
+
+/**
+ * Where the engine put one instance.
+ *
+ * `position` is a translation of the object's own file coordinates and `rotation` is the
+ * linear part the engine applied on top, so the placed geometry is exactly
+ * `rotation · vertex + position` — the same identity the plate description uses. A
+ * caller that only moves things can ignore `rotation`; it is the identity matrix then.
+ */
+export interface ArrangePlacement {
+  position: [number, number, number];
+  /** Row-major 3×3. */
+  rotation: [number, number, number, number, number, number, number, number, number];
+}
+
+export interface ArrangeResult {
+  /** One entry per {@link ArrangeJob.objects} entry, in the same order. */
+  placements: ArrangePlacement[];
+}
+
+// ---------------------------------------------------------------------------
 // The port
 // ---------------------------------------------------------------------------
 
@@ -160,4 +205,21 @@ export interface SlicerEngine {
   readonly id: string;
   probe(): Promise<EngineInfo>;
   slice(job: SliceJob, options?: SliceOptions): AsyncGenerator<SliceProgress, SliceArtifacts, void>;
+  /**
+   * Lay objects out on the plate.
+   *
+   * Part of the port rather than a route helper because packing is the engine's job, not
+   * ours: it is the only thing that knows the bed's exclusion zones, the skirt and prime
+   * clearances and the sequential-print envelope. (SPEC: "delegate to `--arrange 1`".)
+   */
+  arrange(job: ArrangeJob, options?: { signal?: AbortSignal }): Promise<ArrangeResult>;
+  /**
+   * Put a client-rendered plate preview into an artefact this engine produced.
+   *
+   * On the port because the artefact's internal shape belongs to the engine that wrote
+   * it, and because "the preview has to be rendered somewhere with a GPU" is a property
+   * of every headless slicer, not of OrcaSlicer specifically (SPEC: "the blank thumbnail
+   * is our problem to solve"). Returns the artefact's new size in bytes.
+   */
+  embedPlateThumbnail(artifactPath: string, plate: number, png: Uint8Array): Promise<number>;
 }

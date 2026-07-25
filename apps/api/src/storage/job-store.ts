@@ -127,6 +127,20 @@ export class JobStore {
       );
   }
 
+  /**
+   * Replace the artefact list of a finished job.
+   *
+   * Exists because an artefact can change after publication: the plate preview is
+   * rendered by the client and written into the `.gcode.3mf` afterwards (M4), which
+   * changes its length — and `GET /jobs/:id/artifacts/:name` sends `Content-Length` from
+   * this row.
+   */
+  setArtifacts(id: string, artifacts: readonly ArtifactSummary[]): void {
+    this.db
+      .prepare('UPDATE jobs SET artifacts = ? WHERE id = ?')
+      .run(JSON.stringify(artifacts), id);
+  }
+
   markFinished(
     id: string,
     state: Extract<JobState, 'failed' | 'cancelled'>,

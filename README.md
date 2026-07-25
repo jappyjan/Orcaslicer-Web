@@ -175,6 +175,56 @@ docker compose up -d api
 npm run dev -w @orca-web/web
 ```
 
+## The touch plater (M4)
+
+`apps/web/src/three` + `apps/web/src/state/plate.ts` — a three.js build plate you arrange
+with a thumb, and the serialisation that makes the slice land where the screen said.
+
+The whole screen is one line of the brief made literal: **transform via an explicit mode
+toggle with sliders and numeric fields, not desktop-style drag gizmos.**
+
+- **The finger in the 3D view only moves the camera.** One finger orbits, two pan and
+  zoom, a tap selects. Nothing in the viewport is draggable — a drag handle on a phone is
+  a small target underneath the very finger aiming at it. `OrbitControls` is deliberately
+  not used: its two-finger gesture dollies and pans at once, so a pan always zooms a
+  little. Here a pinch whose distance changed is a zoom and one whose midpoint moved is a
+  pan, decided per move.
+- **Move / Rotate / Scale are three full-width tabs**, each with a slider _and_ a number
+  field. The slider is how a thumb says "a bit to the left"; the field is how it says
+  120.0 mm — on a 256 mm bed at 390 px, one pixel is 0.7 mm, so a slider alone cannot hit
+  a millimetre. Duplicate, delete, lay-flat, drop-to-bed, centre and ±90° are labelled
+  full-width rows.
+- **The plate is the printer's own.** `printable_area`, `printable_height` and
+  `bed_exclude_area` come from the selected machine preset, fully resolved. Nothing is
+  hardcoded — an X1C is 256 × 256 × 250 with a wipe pad in the front-left corner, and a
+  plater that draws the wrong bed is worse than no plater because it looks right.
+- **Off-the-plate and overlapping objects are shown before slicing**, in the colour of the
+  object and in a line of text. The engine's answer to both is an exit code (`-52`, `-64`)
+  a minute into a slice, which on mobile data is the difference between using this and not.
+- **Auto-arrange delegates to the engine** (`--arrange 1`, `POST /plater/arrange`). There
+  is no bin packer in this repo: the engine is the only thing that knows its own
+  clearances and exclusion zones, and it gets the last word anyway.
+- **Rotation and scale are baked into the geometry server-side.** The engine's plate
+  description carries positions and nothing else, so a rotated object reaches the slicer
+  as a re-exported binary STL with real facet normals (SPEC deviation #11).
+- **The blank thumbnail is fixed.** The plate preview is rendered from the WebGL view,
+  uploaded as a PNG and written into the `.gcode.3mf` — which, with `--min-save`, has no
+  `Metadata/plate_1.png` member at all (deviation #5).
+
+Acceptance, measured rather than eyeballed:
+
+```bash
+docker compose up -d api
+node test/e2e/plater.mjs      # 390x844, touch emulation, a real slice
+```
+
+It places two objects with the on-screen controls (one of them turned 90°), slices, then
+parses the extrusion coordinates out of the G-code and compares them with the numbers the
+screen was showing. Both objects land within **0.000 mm** of their on-screen position at a
+0.35 mm tolerance — the tolerance exists for the half-line-width inset of the outer wall,
+not for placement error. It also asserts nothing overflows 390 px, every target is ≥ 44 px,
+and `Metadata/plate_1.png` is present and non-blank in the served archive.
+
 ## Working on the code
 
 ```bash

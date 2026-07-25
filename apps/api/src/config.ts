@@ -41,6 +41,13 @@ export interface AppConfig {
   maxSecondsPerPlate: number;
   maxTrianglesPerPlate: number;
   progressIntervalMs: number;
+  /**
+   * Wall-clock ceiling for one auto-arrange (M4). Far shorter than a slice: packing a
+   * plate is near-instant, and the user is waiting on it with their thumb on the button.
+   */
+  arrangeTimeoutMs: number;
+  /** Ceiling on a client-rendered plate preview (M4), before it is written into the archive. */
+  maxThumbnailBytes: number;
   /** Per-file upload cap. */
   maxUploadBytes: number;
   /** Total bytes the content-addressed model library may hold before LRU eviction. */
@@ -98,6 +105,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     maxSecondsPerPlate: num(env.MAX_SECONDS_PER_PLATE, 10 * 60),
     maxTrianglesPerPlate: num(env.MAX_TRIANGLES_PER_PLATE, 20_000_000),
     progressIntervalMs: num(env.PROGRESS_INTERVAL_MS, 1_000),
+    arrangeTimeoutMs: num(env.ARRANGE_TIMEOUT_MS, 60_000),
+    maxThumbnailBytes: num(env.MAX_THUMBNAIL_BYTES, 4 * 1024 * 1024),
     maxUploadBytes: num(env.MAX_UPLOAD_BYTES, 512 * 1024 * 1024),
     modelLibraryMaxBytes: num(env.MODEL_LIBRARY_MAX_BYTES, 4 * 1024 * 1024 * 1024),
     modelTtlMs: num(env.MODEL_TTL_MS, 30 * 24 * 60 * 60 * 1000),

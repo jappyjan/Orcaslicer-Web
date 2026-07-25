@@ -11,6 +11,10 @@
  *   DELETE /jobs/:id                  cancel and clean up
  *   GET    /catalog                   vendors → printer models → nozzle variants (?schema=1)
  *   GET    /catalog/presets           resolved process/filament presets for a printer
+ *   GET    /models/:id/file           model bytes for the plater's mesh loader   (M4)
+ *   GET    /plater/bed                the real build plate for a printer         (M4)
+ *   POST   /plater/arrange            engine-side auto-arrange                   (M4)
+ *   POST   /jobs/:id/thumbnail        client-rendered plate preview → archive    (M4)
  *   GET    /healthz
  *   GET    /*                         the built web client (M3) — see http/static.ts
  */
@@ -33,6 +37,7 @@ import type { CatalogService } from '../catalog/service.js';
 import type { AppConfig } from '../config.js';
 import type { SlicerEngine } from '../engine/port.js';
 import { registerCatalogRoutes } from './catalog-routes.js';
+import { registerPlaterRoutes } from './routes/plater.js';
 import { isApiPath, registerStatic, wantsHtml } from './static.js';
 import {
   BadRequestError,
@@ -119,6 +124,7 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   // -------------------------------------------------------------------------
 
   registerCatalogRoutes(app, deps.catalog);
+  registerPlaterRoutes(app, deps);
 
   app.get('/healthz', async (): Promise<HealthResponse> => {
     const [info, stats] = await Promise.all([deps.engine.probe(), deps.queue.stats()]);

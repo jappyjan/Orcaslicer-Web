@@ -16,12 +16,15 @@ import type {
   JobSummary,
   ModelRef,
   ModelSummary,
+  ModelTransform,
   PresetRef,
   ResolvedProfile,
 } from '@orca-web/shared';
 import type { AppConfig } from '../config.js';
 import { SliceError, toSliceError } from '../engine/errors.js';
+import { MeshError, bakeTransform, isIdentityTransform } from '../geometry/mesh.js';
 import type {
+  ArrangePlacement,
   EngineInput,
   EngineObject,
   EnginePlate,
@@ -75,6 +78,21 @@ export interface JobServiceDeps {
 }
 
 const MODEL_EXTENSIONS = new Set(['.stl', '.3mf', '.obj', '.step', '.stp', '.amf']);
+
+/**
+ * A ceiling on what one arrange call may lay out. Not a product limit — a plate with
+ * hundreds of instances is a phone problem long before it is a server problem — but the
+ * request stages a file per instance, so it needs a bound.
+ */
+const MAX_ARRANGE_OBJECTS = 64;
+
+/** `POST /plater/arrange`, once the route has validated it. */
+export interface ArrangeRequest {
+  printer: PresetRef;
+  process: PresetRef;
+  /** One entry per instance; `count` has no meaning here. */
+  objects: Array<{ model: ModelRef; transform?: ModelTransform }>;
+}
 
 export function assertModelFilename(filename: string): string {
   const base = basename(filename)
@@ -232,7 +250,7 @@ export class JobService {
           log('error', 'sandbox cleanup failed — disk will leak', { jobId, error: String(error) }),
       },
       async (sandbox) => {
-        const staged = await this.stageModels(request, sandbox.path);
+        const staged = await this.stageModels(modelsOf(request), sandbox.path);
         const input = buildEngineInput(request, staged);
 
         const sliceJob: SliceJob = {
@@ -299,6 +317,102 @@ export class JobService {
   }
 
   // -------------------------------------------------------------------------
+  // The plater's two side doors (M4)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Lay a plate out with the engine's own packer.
+   *
+   * SPEC: auto-arrange "delegates to `--arrange 1`" — we do not write a bin packer. The
+   * engine is the only thing that knows the bed's exclusion zones and clearances, and a
+   * second implementation would disagree with it exactly where it matters.
+   *
+   * Runs in a disposable sandbox like any other engine invocation (hard constraint #4);
+   * it is short, but a rotated model still has to be baked to disk before the packer can
+   * measure it.
+   */
+  async arrangePlate(request: ArrangeRequest): Promise<ArrangePlacement[]> {
+    if (request.objects.length === 0) return [];
+    if (request.objects.length > MAX_ARRANGE_OBJECTS) {
+      throw new BadRequestError(
+        `a plate cannot hold more than ${MAX_ARRANGE_OBJECTS} objects`,
+        'Delete a few and try again.',
+      );
+    }
+    const [machine, process] = await Promise.all([
+      this.resolveOne(request.printer, 'machine'),
+      this.resolveOne(request.process, 'process'),
+    ]);
+
+    const id = `arrange-${randomUUID()}`;
+    return withSandbox(
+      this.deps.config.workRoot,
+      id,
+      {
+        onCleanupError: (error) =>
+          this.deps.log('error', 'sandbox cleanup failed — disk will leak', {
+            jobId: id,
+            error: String(error),
+          }),
+      },
+      async (sandbox) => {
+        // Reuses the job path's staging, so an arranged plate measures exactly the
+        // geometry a slice would: same baking, same file, same bounding box.
+        const staged = await this.stageModels(
+          request.objects.map((object) =>
+            object.transform === undefined
+              ? { ref: object.model }
+              : { ref: object.model, transform: object.transform },
+          ),
+          sandbox.path,
+        );
+        const objects = request.objects.map((object) => ({
+          path: staged.get(stagedKey(object.model, object.transform)) as string,
+        }));
+        const result = await this.deps.engine.arrange({
+          id,
+          workDir: sandbox.path,
+          objects,
+          machine,
+          process,
+          wallClockMs: this.deps.config.arrangeTimeoutMs,
+        });
+        return result.placements;
+      },
+    );
+  }
+
+  /**
+   * Write a client-rendered plate preview into a finished job's project archive.
+   *
+   * SPEC: the slicer needs OpenGL for this and there is no display server, so the
+   * `.gcode.3mf` we serve would otherwise show an empty preview on the printer's screen.
+   * VERIFIED DEVIATION #5: with `--min-save` the member is absent rather than blank.
+   */
+  async attachPlateThumbnail(jobId: string, plate: number, png: Uint8Array): Promise<number> {
+    const job = this.deps.jobs.get(jobId);
+    if (!job) throw new NotFoundError(`no job ${jobId}`);
+    const artifact = job.artifacts.find((candidate) => candidate.role === 'project');
+    if (!artifact) {
+      throw new BadRequestError(
+        `job ${jobId} has no project archive to put a preview into`,
+        job.state === 'succeeded' ? undefined : 'Wait for the slice to finish.',
+      );
+    }
+    const path = this.deps.artifacts.pathFor(jobId, artifact.name);
+    if (path === undefined) throw new NotFoundError(`job ${jobId} has no artefact to update`);
+
+    const bytes = await this.deps.engine.embedPlateThumbnail(path, plate, png);
+    this.deps.jobs.setArtifacts(
+      jobId,
+      job.artifacts.map((candidate) =>
+        candidate.name === artifact.name ? { ...candidate, bytes } : candidate,
+      ),
+    );
+    return bytes;
+  }
+
+  // -------------------------------------------------------------------------
   // Cancellation and deletion
   // -------------------------------------------------------------------------
 
@@ -356,31 +470,36 @@ export class JobService {
     this.deps.events.publish(jobId, { type: 'state', jobId, state, at: new Date().toISOString() });
   }
 
+  private async resolveOne(ref: PresetRef, kind: PresetRef['kind']): Promise<ResolvedProfile> {
+    if (!ref || typeof ref.name !== 'string' || typeof ref.vendor !== 'string') {
+      throw new BadRequestError(`"${kind}" must name a preset (vendor + name)`);
+    }
+    try {
+      return await this.deps.resolver.resolve({ ...ref, kind });
+    } catch (error) {
+      if (error instanceof ProfileNotFoundError) {
+        throw new NotFoundError(`no ${kind} preset "${ref.name}" for vendor "${ref.vendor}"`);
+      }
+      throw new SliceError('PROFILE_INVALID', `The ${kind} preset could not be loaded.`, {
+        hint: 'Choose a different preset.',
+        detail: String(error),
+        cause: error,
+      });
+    }
+  }
+
   private async resolveProfiles(request: JobRequest): Promise<{
     machine: ResolvedProfile;
     process: ResolvedProfile;
     filaments: ResolvedProfile[];
   }> {
-    const resolve = async (ref: PresetRef, kind: PresetRef['kind']): Promise<ResolvedProfile> => {
-      try {
-        return await this.deps.resolver.resolve({ ...ref, kind });
-      } catch (error) {
-        if (error instanceof ProfileNotFoundError) {
-          throw new NotFoundError(`no ${kind} preset "${ref.name}" for vendor "${ref.vendor}"`);
-        }
-        throw new SliceError('PROFILE_INVALID', `The ${kind} preset could not be loaded.`, {
-          hint: 'Choose a different preset.',
-          detail: String(error),
-          cause: error,
-        });
-      }
-    };
-
     const [machine, process] = await Promise.all([
-      resolve(request.printer, 'machine'),
-      resolve(request.process, 'process'),
+      this.resolveOne(request.printer, 'machine'),
+      this.resolveOne(request.process, 'process'),
     ]);
-    const filaments = await Promise.all(request.filaments.map((ref) => resolve(ref, 'filament')));
+    const filaments = await Promise.all(
+      request.filaments.map((ref) => this.resolveOne(ref, 'filament')),
+    );
     return { machine, process, filaments };
   }
 
@@ -390,28 +509,55 @@ export class JobService {
    * A hard link is tried first (free, and the blob is immutable so sharing an inode is
    * safe); `/work` is usually a tmpfs on a different filesystem, in which case it falls
    * back to a copy. Either way the library blob itself is never handed to the engine.
+   *
+   * An object carrying a non-identity {@link PlateObject.transform} is the exception: the
+   * plate description has positions and no rotation or scale, so the transform is baked
+   * into a fresh binary STL here (`geometry/mesh.ts`). The library blob is still never
+   * mutated — the baked copy lives and dies with the sandbox — and two objects that share
+   * a model *and* a transform still stage once.
    */
   private async stageModels(
-    request: JobRequest,
+    wanted: ReadonlyArray<{ ref: ModelRef; transform?: ModelTransform }>,
     sandboxPath: string,
   ): Promise<Map<string, string>> {
     const dir = join(sandboxPath, 'models');
     await mkdir(dir, { recursive: true });
 
-    const refs: ModelRef[] =
-      request.input.kind === 'models'
-        ? [...request.input.models]
-        : request.input.plates.flatMap((plate) => plate.objects.map((object) => object.model));
-
     const staged = new Map<string, string>();
     let index = 0;
-    for (const ref of refs) {
-      const key = refKey(ref);
+    for (const { ref, transform } of wanted) {
+      const key = stagedKey(ref, transform);
       if (staged.has(key)) continue;
       const model = this.lookupModel(ref);
       index += 1;
-      const target = join(dir, `${index}-${model.filename}`);
       const source = this.deps.models.pathFor(model.id);
+
+      if (transform !== undefined && !isIdentityTransform(transform)) {
+        const target = join(
+          dir,
+          `${index}-${basename(model.filename, extname(model.filename))}.stl`,
+        );
+        try {
+          await bakeTransform(source, target, transform, model.filename);
+        } catch (error) {
+          if (error instanceof MeshError) {
+            throw new SliceError(
+              'INPUT_UNREADABLE',
+              'A rotated or resized model could not be read.',
+              {
+                hint: 'Reset the model to its original orientation, or re-export it as an STL.',
+                detail: `${model.filename}: ${error.message}`,
+                cause: error,
+              },
+            );
+          }
+          throw error;
+        }
+        staged.set(key, target);
+        continue;
+      }
+
+      const target = join(dir, `${index}-${model.filename}`);
       try {
         await link(source, target);
       } catch {
@@ -432,8 +578,26 @@ export class JobService {
   }
 }
 
-function refKey(ref: ModelRef): string {
-  return ref.source === 'library' ? `library:${ref.id}` : `upload:${basename(ref.filename)}`;
+/** Every model a job refers to, with the transform it will be baked with. */
+function modelsOf(request: JobRequest): Array<{ ref: ModelRef; transform?: ModelTransform }> {
+  if (request.input.kind === 'models') return request.input.models.map((ref) => ({ ref }));
+  return request.input.plates.flatMap((plate) =>
+    plate.objects.map((object) =>
+      object.transform === undefined
+        ? { ref: object.model }
+        : { ref: object.model, transform: object.transform },
+    ),
+  );
+}
+
+/**
+ * What "the same staged file" means: the same model *and* the same baked transform. Two
+ * copies of one model at different rotations are two files in the sandbox; two copies at
+ * the same rotation are one.
+ */
+function stagedKey(ref: ModelRef, transform?: readonly number[]): string {
+  const model = ref.source === 'library' ? `library:${ref.id}` : `upload:${basename(ref.filename)}`;
+  return isIdentityTransform(transform) ? model : `${model}|${transform?.join(',') ?? ''}`;
 }
 
 function validateRequest(request: JobRequest): void {
@@ -456,6 +620,21 @@ function validateRequest(request: JobRequest): void {
     if (!Array.isArray(request.input.plates) || request.input.plates.length === 0) {
       throw new BadRequestError('"input.plates" must contain at least one plate');
     }
+    for (const plate of request.input.plates) {
+      for (const object of plate.objects ?? []) {
+        if (object.transform === undefined) continue;
+        if (
+          !Array.isArray(object.transform) ||
+          object.transform.length !== 9 ||
+          object.transform.some((value) => typeof value !== 'number' || !Number.isFinite(value))
+        ) {
+          throw new BadRequestError(
+            '"transform" must be nine finite numbers (a row-major 3x3 matrix)',
+            'It carries rotation and scale; the translation is posX/posY/posZ.',
+          );
+        }
+      }
+    }
   } else if (request.input.kind === 'models') {
     if (!Array.isArray(request.input.models) || request.input.models.length === 0) {
       throw new BadRequestError('"input.models" must contain at least one model');
@@ -469,14 +648,14 @@ function validateRequest(request: JobRequest): void {
 }
 
 function buildEngineInput(request: JobRequest, staged: ReadonlyMap<string, string>): EngineInput {
-  const pathFor = (ref: ModelRef): string => {
-    const path = staged.get(refKey(ref));
+  const pathFor = (ref: ModelRef, transform?: readonly number[]): string => {
+    const path = staged.get(stagedKey(ref, transform));
     if (path === undefined) throw new Error('model was not staged into the sandbox');
     return path;
   };
 
   if (request.input.kind === 'models') {
-    return { kind: 'files', paths: request.input.models.map(pathFor) };
+    return { kind: 'files', paths: request.input.models.map((ref) => pathFor(ref)) };
   }
 
   const plates: EnginePlate[] = request.input.plates.map((plate, plateIndex) => ({
@@ -486,7 +665,7 @@ function buildEngineInput(request: JobRequest, staged: ReadonlyMap<string, strin
     objects: plate.objects.map((object): EngineObject => {
       const count = object.count ?? 1;
       const engineObject: EngineObject = {
-        path: pathFor(object.model),
+        path: pathFor(object.model, object.transform),
         count,
         filaments: object.filaments ?? [1],
         assembleIndex: object.assembleIndex ?? [1],

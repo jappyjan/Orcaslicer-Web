@@ -15,6 +15,8 @@ import { join } from 'node:path';
 import type { SliceStats } from '@orca-web/shared';
 import { SliceError } from './errors.js';
 import type {
+  ArrangeJob,
+  ArrangeResult,
   EngineInfo,
   SliceArtifacts,
   SliceJob,
@@ -58,6 +60,9 @@ export class MockSlicerEngine implements SlicerEngine {
   private readonly config: MockEngineConfig;
   /** Sandbox paths seen, so tests can assert they were removed afterwards. */
   readonly seenWorkDirs: string[] = [];
+  /** One entry per arrange() call: the staged paths it was asked to lay out. */
+  readonly arranged: string[][] = [];
+  readonly thumbnails: Array<{ artifactPath: string; plate: number; bytes: number }> = [];
 
   constructor(config: MockEngineConfig = {}) {
     this.config = config;
@@ -65,6 +70,29 @@ export class MockSlicerEngine implements SlicerEngine {
 
   async probe(): Promise<EngineInfo> {
     return { id: this.id, version: '0.0.0-mock' };
+  }
+
+  /**
+   * A grid, 60 mm apart, centred on nothing in particular. It exists so the arrange route
+   * can be tested without the binary; the real packing is the engine's (SPEC: delegate to
+   * `--arrange 1`), and a caller that depends on the exact layout is depending on the
+   * wrong thing.
+   */
+  async arrange(job: ArrangeJob): Promise<ArrangeResult> {
+    this.arranged.push(job.objects.map((object) => object.path));
+    const columns = Math.max(1, Math.ceil(Math.sqrt(job.objects.length)));
+    return {
+      placements: job.objects.map((_, index) => ({
+        position: [50 + (index % columns) * 60, 50 + Math.floor(index / columns) * 60, 0],
+        rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+      })),
+    };
+  }
+
+  async embedPlateThumbnail(artifactPath: string, plate: number, png: Uint8Array): Promise<number> {
+    this.thumbnails.push({ artifactPath, plate, bytes: png.byteLength });
+    await writeFile(`${artifactPath}.thumb-${plate}.png`, png);
+    return png.byteLength;
   }
 
   async *slice(

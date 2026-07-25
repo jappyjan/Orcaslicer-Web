@@ -1,13 +1,23 @@
 /**
- * The whole app: two screens (setup, job) and four full-screen pickers.
+ * The whole app: three screens (setup, plater, job) and four full-screen pickers.
  *
- * There is no router and no state library on purpose. M3's scope is one flow — upload,
- * choose four things, slice, download — and a phone shows one thing at a time anyway.
- * When M4 adds the plater it slots in as a third screen between setup and job, fed by
- * the same `Selection`; nothing here has to become a route first.
+ * There is no router and no state library on purpose. The scope is one flow — upload,
+ * choose four things, arrange the plate, slice, download — and a phone shows one thing at
+ * a time anyway. M4's plater slotted in as the third screen exactly as M3 predicted,
+ * fed by the same `Selection`; nothing here had to become a route first.
+ *
+ * Two pieces of state that M4 added and that are worth finding quickly:
+ *
+ *  - `plate` — what is on the build plate. It is the thing serialised into the job
+ *    descriptor, so the positions the user set are the positions the engine is given
+ *    (`state/plate.ts`).
+ *  - `thumbnail` — a PNG of the plate, rendered from the WebGL view at the moment Slice
+ *    is pressed and uploaded once the job succeeds. The slicer cannot make one (no
+ *    display server, and `--min-save` omits the member entirely — SPEC deviation #5), so
+ *    without this every printer shows an empty preview.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ApiError, JobEvent, ModelSummary } from '@orca-web/shared';
 import {
   defaultFilament,
@@ -33,17 +43,42 @@ import {
   rehydrate,
   rehydratePresets,
   savePersisted,
+  selectedNozzle,
   withNozzle,
   withPrinter,
   type PersistedSelection,
   type Selection,
 } from '../state/selection.ts';
 import { readRecentModels, rememberModel, saveRecentModels } from '../state/recent-models.ts';
-import { JobScreen } from './JobScreen.tsx';
+import { JobScreen, type PreviewState } from './JobScreen.tsx';
 import { ModelPicker } from './ModelPicker.tsx';
 import { PresetPicker } from './PresetPicker.tsx';
 import { PrinterPicker } from './PrinterPicker.tsx';
 import { SetupScreen, type SheetName } from './SetupScreen.tsx';
+import { arrangePlate, loadBed, uploadPlateThumbnail } from '../api/plater.ts';
+import {
+  EMPTY_PLATE,
+  composedRotation,
+  fitProblems,
+  matrixOf,
+  toPlateSpec,
+  type Instance,
+  type Plate,
+} from '../state/plate.ts';
+
+/**
+ * three.js is ~600 kB and nothing before the plater needs it, so the renderer, the mesh
+ * loaders and this screen are one lazily loaded chunk. Hard constraint #5 is about the
+ * phone in someone's hand, and that includes what it has to download before the first
+ * screen is usable.
+ */
+const PlaterScreen = lazy(async () => ({
+  default: (await import('./PlaterScreen.tsx')).PlaterScreen,
+}));
+const plater = () => import('./PlaterScreen.tsx');
+const geometryModule = () => import('../three/geometry.ts');
+const sceneModule = () => import('../three/plater-scene.ts');
+import type { BedSpec } from '@orca-web/shared';
 import { Button, ErrorNotice, Spinner } from './primitives.tsx';
 
 interface PresetState {
@@ -74,9 +109,22 @@ export function App() {
   const [submitError, setSubmitError] = useState<ApiError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [job, setJob] = useState<{ id: string; model: ProgressModel } | null>(null);
+  const [bed, setBed] = useState<BedSpec | null>(null);
+  const [bedError, setBedError] = useState<ApiError | null>(null);
+  const [plate, setPlate] = useState<Plate>(EMPTY_PLATE);
+  const [showPlater, setShowPlater] = useState(false);
+  const [addingModel, setAddingModel] = useState(false);
+  const [preview, setPreview] = useState<PreviewState>('none');
   const [cancelling, setCancelling] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
+  /** Captured when Slice is pressed; uploaded when the job succeeds. */
+  const thumbnail = useRef<Blob | null>(null);
+  /** Latest bed and plate, readable from callbacks that must not be re-bound per edit. */
+  const bedRef = useRef<BedSpec | null>(null);
+  bedRef.current = bed;
+  const plateRef = useRef<Plate>(plate);
+  plateRef.current = plate;
   const persisted = useRef<PersistedSelection | null>(null);
   const unsubscribe = useRef<(() => void) | null>(null);
   /**
@@ -147,6 +195,142 @@ export function App() {
     fetchPresets(printer, nozzle);
   }, [printer, printerId, nozzle, fetchPresets]);
 
+  // -- the build plate -----------------------------------------------------
+  // The bed comes from the selected machine preset — `printable_area` /
+  // `printable_height`, fully resolved. Never a hardcoded 256x256: a plater that draws
+  // the wrong bed is worse than no plater, because it looks right.
+  useEffect(() => {
+    if (!printer || nozzle === null) {
+      setBed(null);
+      return;
+    }
+    let cancelled = false;
+    setBedError(null);
+    loadBed(printer, nozzle).then(
+      (loaded) => {
+        if (!cancelled) setBed(loaded);
+      },
+      (error: unknown) => {
+        if (cancelled) return;
+        // No bed means no plater; the descriptor falls back to letting the engine
+        // arrange, which is exactly M3's behaviour.
+        setBed(null);
+        setBedError(asApiError(error));
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [printer, nozzle]);
+
+  /**
+   * Choosing a model puts one copy of it on the plate, centred.
+   *
+   * Measured before it is placed: every placement question — where its centre is, whether
+   * it is on the bed — is a question about the mesh's bounds, and an instance whose bounds
+   * are a guess would slice somewhere other than where it was drawn. A model whose format
+   * the viewer cannot read leaves the plate empty on purpose, and the job descriptor then
+   * falls back to letting the engine arrange it.
+   */
+  const modelId = selection.model?.id ?? null;
+  const modelName = selection.model?.filename ?? null;
+  useEffect(() => {
+    if (modelId === null || modelName === null) {
+      setPlate(EMPTY_PLATE);
+      return;
+    }
+    if (bed === null) return;
+    let cancelled = false;
+    void (async () => {
+      const [{ loadGeometry, measure }, { makeInstance }] = await Promise.all([
+        geometryModule(),
+        plater(),
+      ]);
+      const geometry = await loadGeometry(modelId, modelName);
+      if (cancelled) return;
+      const box = measure(geometry, matrixOf({ rotation: [0, 0, 0], scale: 1 }));
+      setPlate((current) => {
+        if (current.instances.some((instance) => instance.modelId === modelId)) return current;
+        const instance = makeInstance(modelId, modelName, box, bed);
+        return { instances: [instance], selectedId: instance.id };
+      });
+    })().catch(() => {
+      if (!cancelled) setPlate(EMPTY_PLATE);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [modelId, modelName, bed]);
+
+  const addToPlate = useCallback(
+    async (model: ModelSummary) => {
+      const [{ loadGeometry, measure }, { makeInstance }] = await Promise.all([
+        geometryModule(),
+        plater(),
+      ]);
+      const geometry = await loadGeometry(model.id, model.filename);
+      const box = measure(geometry, matrixOf({ rotation: [0, 0, 0], scale: 1 }));
+      setPlate((current) => {
+        const instance = makeInstance(model.id, model.filename, box, bed);
+        // Offset so a second copy is visibly a second object rather than a collision.
+        const width = box.max[0] - box.min[0];
+        instance.x += current.instances.length * (Math.max(width, 10) + 5);
+        return { instances: [...current.instances, instance], selectedId: instance.id };
+      });
+    },
+    [bed],
+  );
+
+  /**
+   * Auto-arrange: the engine's packer, not ours (SPEC — delegate to `--arrange 1`).
+   *
+   * The response is in the same terms as everything else on this boundary —
+   * `world = rotation · vertex + position` — so the answer is folded back into the
+   * instances by asking what centre that position implies, which keeps one convention in
+   * the client instead of two.
+   */
+  const runArrange = useCallback(async () => {
+    const current = plateRef.current;
+    const machine = selectedNozzle(selection);
+    if (!selection.printer || !machine || !selection.process || current.instances.length === 0) {
+      return;
+    }
+    const response = await arrangePlate(
+      { kind: 'machine', vendor: selection.printer.vendorId, name: machine.machinePresetName },
+      { kind: 'process', vendor: selection.process.vendor, name: selection.process.name },
+      current.instances.map((instance) => {
+        const transform = matrixOf(instance);
+        return { model: { source: 'library' as const, id: instance.modelId }, transform };
+      }),
+    );
+
+    const { loadGeometry, measure } = await geometryModule();
+    const geometries = await Promise.all(
+      current.instances.map((instance) => loadGeometry(instance.modelId, instance.filename)),
+    );
+    setPlate((plateNow) => ({
+      ...plateNow,
+      instances: plateNow.instances.map((instance, index) => {
+        const placed = response.instances[index];
+        const geometry = geometries[index];
+        if (!placed || !geometry) return instance;
+        // The engine may have turned the object as well as moved it; folding its rotation
+        // into the instance's own keeps the two in step. In practice 2.4.2's packer
+        // returns the identity here, so this is insurance rather than routine.
+        const rotation = composedRotation(placed.rotation, instance);
+        const box = measure(geometry, matrixOf({ rotation, scale: instance.scale }));
+        return {
+          ...instance,
+          rotation,
+          box,
+          x: placed.position[0] + (box.min[0] + box.max[0]) / 2,
+          y: placed.position[1] + (box.min[1] + box.max[1]) / 2,
+          z: placed.position[2] + box.min[2],
+        };
+      }),
+    }));
+  }, [selection]);
+
   // -- persistence ---------------------------------------------------------
   useEffect(() => {
     if (!hydrated.current) return;
@@ -177,13 +361,50 @@ export function App() {
     [],
   );
 
-  const startJob = useCallback((current: Selection) => {
+  /**
+   * Submit the plate.
+   *
+   * Two things happen before the request that did not in M3:
+   *
+   *  1. the plate is serialised into the descriptor with `arrange: false` and real
+   *     positions, so the slice lands where the screen said (`state/plate.ts`);
+   *  2. a PNG of the plate is rendered off-screen and held until the job succeeds, at
+   *     which point it is written into the `.gcode.3mf`. The slicer cannot produce one
+   *     (no display server) and `--min-save` leaves the member out entirely, so the
+   *     printer's screen would otherwise show an empty preview.
+   */
+  const startJob = useCallback((current: Selection, currentPlate: Plate) => {
     if (!isComplete(current)) return;
     setSubmitError(null);
     setSubmitting(true);
     setNotice(null);
+    setPreview('none');
 
-    createJob(buildDescriptor(current)).then(
+    const placed =
+      currentPlate.instances.length > 0 ? toPlateSpec(currentPlate.instances) : undefined;
+    thumbnail.current = null;
+    // Fire-and-forget: a preview is worth a round trip, never worth blocking a slice.
+    void (async () => {
+      const [{ loadGeometry }, { renderPlateThumbnail }] = await Promise.all([
+        geometryModule(),
+        sceneModule(),
+      ]);
+      const entries = await Promise.all(
+        [...new Set(currentPlate.instances.map((instance) => instance.modelId))].map(async (id) => {
+          const instance = currentPlate.instances.find((candidate) => candidate.modelId === id);
+          return [id, await loadGeometry(id, instance?.filename ?? '')] as const;
+        }),
+      );
+      thumbnail.current = await renderPlateThumbnail(
+        bedRef.current,
+        currentPlate.instances,
+        new Map(entries),
+      );
+    })().catch(() => {
+      thumbnail.current = null;
+    });
+
+    createJob(buildDescriptor(current, placed)).then(
       (created) => {
         setSubmitting(false);
         const started = initialProgress(Date.now());
@@ -191,12 +412,14 @@ export function App() {
         setNow(Date.now());
         unsubscribe.current?.();
         unsubscribe.current = subscribeToJob(created.id, {
-          onEvent: (event: JobEvent) =>
+          onEvent: (event: JobEvent) => {
+            if (event.type === 'done') attachThumbnail(event.jobId);
             setJob((state) =>
               state && state.id === event.jobId
                 ? { ...state, model: reduceProgress(state.model, event, Date.now()) }
                 : state,
-            ),
+            );
+          },
           onDegraded: () =>
             setJob((state) =>
               state ? { ...state, model: { ...state.model, degraded: true } } : state,
@@ -211,6 +434,22 @@ export function App() {
         setSubmitting(false);
         setSubmitError(asApiError(error));
       },
+    );
+  }, []);
+
+  /** Write the captured preview into the finished archive, then let the download appear. */
+  const attachThumbnail = useCallback((jobId: string) => {
+    const png = thumbnail.current;
+    if (!png) {
+      setPreview('none');
+      return;
+    }
+    setPreview('uploading');
+    uploadPlateThumbnail(jobId, png).then(
+      () => setPreview('done'),
+      // A failed rewrite costs a preview picture on the printer's screen and nothing
+      // else; the G-code in the archive is untouched either way.
+      () => setPreview('failed'),
     );
   }, []);
 
@@ -243,8 +482,23 @@ export function App() {
     unsubscribe.current?.();
     unsubscribe.current = null;
     setJob(null);
-    startJob(selection);
-  }, [selection, startJob]);
+    startJob(selection, plate);
+  }, [plate, selection, startJob]);
+
+  /** What the setup screen's Plate row says underneath "N objects". */
+  const plateDetail = useMemo(() => {
+    if (plate.instances.length === 0) {
+      return bed === null ? 'The slicer will place it' : 'Preparing…';
+    }
+    const problems = fitProblems(plate.instances, bed);
+    if (problems.size > 0) {
+      return `${problems.size} object${problems.size === 1 ? '' : 's'} the slicer would reject`;
+    }
+    const selectedInstance = plate.instances[0] as Instance;
+    return plate.instances.length === 1
+      ? `at ${Math.round(selectedInstance.x)}, ${Math.round(selectedInstance.y)} mm`
+      : 'Tap to arrange';
+  }, [bed, plate.instances]);
 
   const jobHeading = useMemo(() => {
     const parts = [selection.printer?.name, selection.nozzle ? `${selection.nozzle} mm` : null]
@@ -289,6 +543,7 @@ export function App() {
         onSliceAgain={sliceAgain}
         onBack={backToSetup}
         cancelling={cancelling}
+        preview={preview}
       />
     );
   }
@@ -300,23 +555,57 @@ export function App() {
         selection={selection}
         onOpen={setSheet}
         onNozzle={(variant) => setSelection((current) => withNozzle(current, variant))}
-        onSlice={() => startJob(selection)}
+        onSlice={() => startJob(selection, plate)}
+        onOpenPlater={() => setShowPlater(true)}
+        plateCount={plate.instances.length}
+        plateDetail={plateDetail}
         submitting={submitting}
         error={submitError}
         onDismissError={() => setSubmitError(null)}
         notice={notice}
       />
 
+      {showPlater ? (
+        <Suspense fallback={<Spinner label="Loading the plate…" />}>
+          <PlaterScreen
+            plate={plate}
+            bed={bed}
+            bedError={bedError}
+            printerName={selection.printer?.name ?? ''}
+            onChange={setPlate}
+            onClose={() => setShowPlater(false)}
+            onAddModel={() => {
+              setAddingModel(true);
+              setSheet('model');
+            }}
+            onArrange={runArrange}
+            onSlice={() => startJob(selection, plate)}
+            slicing={submitting}
+          />
+        </Suspense>
+      ) : null}
+
       {sheet === 'model' ? (
         <ModelPicker
           recent={recent}
           selectedId={selection.model?.id ?? null}
           onSelect={(model) => {
+            if (addingModel) {
+              // Adding to the plate, not replacing the job's model: the plate can hold
+              // several different models, and the first one chosen still names the job.
+              setAddingModel(false);
+              void addToPlate(model);
+              setSheet(null);
+              return;
+            }
             setSelection((current) => ({ ...current, model }));
             setSheet(null);
           }}
           onUpload={handleUpload}
-          onClose={() => setSheet(null)}
+          onClose={() => {
+            setAddingModel(false);
+            setSheet(null);
+          }}
         />
       ) : null}
 

@@ -17,8 +17,12 @@ import type { ApiError, ModelSummary } from '@orca-web/shared';
 import { formatBytes } from '../format.ts';
 import { ErrorNotice, OptionRow, Sheet } from './primitives.tsx';
 
-/** Everything `apps/api/src/jobs/job-service.ts` accepts. */
-const ACCEPT = '.stl,.3mf,.obj,.step,.stp,.amf';
+// ponytail: no `accept` on purpose. iOS resolves `accept` entries to UTIs and greys out
+// anything it cannot match — `.stl` has a system UTI, `.3mf` and the rest do not, so an
+// extension list makes 3MF unselectable in the Files app (mdn/browser-compat-data#26043).
+// MIME types do not help: there is no registered iOS type for 3MF either. The allowlist in
+// `apps/api/src/jobs/job-service.ts` is the real gate and returns a 400 listing the
+// supported formats, so filtering here only ever bought desktop tidiness.
 
 export function ModelPicker({
   recent,
@@ -78,7 +82,6 @@ export function ModelPicker({
             Choose a file
             <input
               type="file"
-              accept={ACCEPT}
               data-testid="model-file-input"
               aria-label="Choose a model file"
               className="absolute inset-0 h-full w-full opacity-0"

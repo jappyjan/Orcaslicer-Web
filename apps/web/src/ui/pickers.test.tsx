@@ -11,6 +11,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildCatalog, type PresetOption } from '../api/catalog.ts';
+import { ModelPicker } from './ModelPicker.tsx';
 import { PresetPicker } from './PresetPicker.tsx';
 import { PrinterPicker } from './PrinterPicker.tsx';
 
@@ -200,5 +201,24 @@ describe('PresetPicker', () => {
     expect(screen.getByText('Available nozzles: 0.2, 0.4, 0.6, 0.8.')).toBeTruthy();
     fireEvent.click(screen.getByTestId('error-retry'));
     expect(onRetry).toHaveBeenCalled();
+  });
+});
+
+describe('ModelPicker', () => {
+  // iOS resolves `accept` entries to UTIs and greys out what it cannot match. `.stl` has a
+  // system UTI and `.3mf` does not, so an extension list silently makes 3MF unpickable on
+  // an iPhone while looking perfectly fine on a desktop — which is why this is a test and
+  // not a comment. The server allowlist is the gate.
+  it('puts no accept filter on the file input, or iOS hides 3MF files', () => {
+    render(
+      <ModelPicker
+        recent={[]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        onUpload={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('model-file-input').hasAttribute('accept')).toBe(false);
   });
 });

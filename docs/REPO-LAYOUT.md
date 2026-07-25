@@ -17,6 +17,13 @@ parallel structure.
 │
 ├── apps/
 │   ├── api/                 # @orca-web/api  — Fastify, job orchestration        (M1)
+│   │   └── src/
+│   │       ├── engine/      #   the SlicerEngine port + orca/ adapter
+│   │       ├── queue/       #   the JobQueue port + in-process / bullmq adapters
+│   │       ├── profiles/    #   the ProfileResolver port + M1 stopgap (M2 replaces)
+│   │       ├── storage/     #   SQLite metadata, content-addressed models, artefacts
+│   │       ├── jobs/        #   orchestration and the SSE event bus
+│   │       └── http/        #   Fastify routes and error mapping
 │   └── web/                 # @orca-web/web  — React + Vite + Tailwind + three.js (M3+)
 │
 ├── packages/
@@ -39,7 +46,8 @@ parallel structure.
 │
 └── docs/
     ├── SPEC.md              # authoritative brief
-    └── REPO-LAYOUT.md       # this file
+    ├── REPO-LAYOUT.md       # this file
+    └── adr/                 # architecture decision records, written before the code
 ```
 
 ## Why this shape
@@ -79,6 +87,24 @@ config files.
 `node_modules` — the M0 image ships the slicer, Node and these scripts, and nothing else.
 `scripts/resolve-profile.mjs` is an explicit stopgap that M2 folds into
 `tools/extractors` and deletes.
+
+**Ports and adapters inside `apps/api/src`.** Each `*/port.ts` is an interface plus its
+error types and nothing else; adapters sit beside it and are selected in exactly one
+place (`app.ts`, or a `create.ts` for the ones chosen by environment variable). The rule
+that makes it worth the directories: nothing outside `engine/orca/` may import from it,
+so "what would a second slicer cost?" has a file-list answer rather than a guess. The two
+boundaries that carry a decision record are `SlicerEngine` (ADR 0001) and `JobQueue`
+(ADR 0002).
+
+**`docs/adr/` for decisions, not designs.** One file per boundary, written _before_ the
+implementation it constrains (working agreement), and kept short enough that the next
+person actually reads it before changing the shape of something.
+
+**Two runtime directories with opposite lifetimes.** `/work` holds one disposable
+sandbox per job and is emptied on every exit path plus at boot; `/data` holds the SQLite
+database, the content-addressed model library and published artefacts, and is the only
+thing that needs a volume. Artefacts are copied out of the sandbox into `/data` before
+cleanup, which is why a download still works a week after the slice.
 
 **`test/` at the root, not per-package.** `test/fixtures/cube20.stl` and
 `test/golden/orca-slicer-help.txt` describe the _container_, not any one workspace, and

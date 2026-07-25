@@ -1,11 +1,11 @@
 # OrcaSlicer Web — development / verification stack.
 #
-# M0 ships only the verification services. The `api` service arrives with M1.
+#   docker compose up api                     # the slice service on :8080
+#   docker compose run --rm smoke             # slice a bundled STL, assert the artefacts
+#   docker compose run --rm help-check        # assert the CLI surface has not drifted
+#   docker compose run --rm integration       # M1 acceptance: 3 concurrent REAL slices
 #
-#   docker compose run --rm smoke        # slice a bundled STL, assert the artefacts
-#   docker compose run --rm help-check   # assert the CLI surface has not drifted
-#
-# Neither service needs a display server, a GPU, or extra privileges.
+# Nothing here needs a display server, a GPU, or extra privileges.
 
 x-orca-image: &orca-image
   build:
@@ -20,6 +20,34 @@ x-orca-image: &orca-image
     - /work:exec,size=2g,mode=1777
 
 services:
+  api:
+    <<: *orca-image
+    environment:
+      # See apps/api/src/config.ts. Concurrency defaults to (CPU count - 1); slicing is
+      # CPU-bound, so raising it past the core count makes every job slower (ADR 0002).
+      SLICE_CONCURRENCY: ${SLICE_CONCURRENCY:-}
+      SLICE_TIMEOUT_MS: ${SLICE_TIMEOUT_MS:-900000}
+      MODEL_LIBRARY_MAX_BYTES: ${MODEL_LIBRARY_MAX_BYTES:-4294967296}
+      QUEUE_DRIVER: ${QUEUE_DRIVER:-memory}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - '${API_PORT:-8080}:8080'
+    volumes:
+      # The model library, job metadata and published artefacts. Explicitly NOT /work.
+      - api-data:/data
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
   smoke:
     <<: *orca-image
     command: ['/app/scripts/smoke.sh']
@@ -32,9 +60,30 @@ services:
       # so `help-check --update` writes the refreshed golden back into the repo
       - ./test/golden:/app/test/golden
 
+  # M1 acceptance test. Runs the real binary — the working agreement forbids mocking the
+  # engine here. The repo is mounted so vitest and the TypeScript sources are available;
+  # it runs as root because the bind mount is owned by the host user, not by `orca`.
+  integration:
+    <<: *orca-image
+    user: '0:0'
+    working_dir: /repo
+    entrypoint: ['npx', 'vitest', 'run', '--project', 'integration']
+    command: []
+    environment:
+      WORK_DIR: /work
+      ORCA_BIN: orca-slicer
+      ORCA_RESOURCES: /opt/orcaslicer/resources
+      XDG_RUNTIME_DIR: /tmp/xdg-orca
+      LOG_LEVEL: warn
+    volumes:
+      - .:/repo
+
   # Convenience: a shell in the image with the slicer on PATH.
   shell:
     <<: *orca-image
     entrypoint: ['/bin/bash']
     command: []
     profiles: ['tools']
+
+volumes:
+  api-data:

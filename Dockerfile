@@ -85,6 +85,30 @@ RUN set -eux; \
     rm -rf "node-v${NODE_VERSION}-linux-x64.tar.xz" /opt/node/share /opt/node/lib/node_modules/npm/docs
 
 # ---------------------------------------------------------------------------
+# build — compile the TypeScript API and resolve production dependencies.
+#
+# Deliberately builds ONLY `apps/api` (and, through project references,
+# `packages/shared`). The root solution also references `tools/extractors`, which is
+# build-time-only tooling whose state must never be able to break the runtime image.
+# ---------------------------------------------------------------------------
+FROM base AS build
+COPY --from=node /opt/node /opt/node
+ENV PATH=/opt/node/bin:$PATH \
+    npm_config_update_notifier=false \
+    npm_config_fund=false \
+    npm_config_audit=false \
+    # Node has its own CA bundle, so the extra certificates installed in `base` are
+    # invisible to npm without this. Harmless when the directory is empty.
+    NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+WORKDIR /src
+COPY . .
+RUN npm ci --no-audit --no-fund
+RUN npx tsc --build apps/api/tsconfig.json
+# Prune to runtime dependencies. Workspace symlinks survive, so the layout copied into
+# the runtime stage below must keep the same relative shape.
+RUN npm ci --omit=dev --no-audit --no-fund
+
+# ---------------------------------------------------------------------------
 # runtime
 # ---------------------------------------------------------------------------
 FROM base AS runtime
@@ -171,19 +195,33 @@ ENV ORCA_VERSION=${ORCA_VERSION} \
     HOME=/home/orca \
     XDG_RUNTIME_DIR=/tmp/xdg-orca \
     XDG_CACHE_HOME=/home/orca/.cache \
-    WORK_DIR=/work
+    WORK_DIR=/work \
+    DATA_DIR=/data \
+    PORT=8080
 
-# Hard constraint #4: every slice runs in a disposable sandbox under /work.
+# Hard constraint #4: every slice runs in a disposable sandbox under /work. /data is the
+# opposite: the content-addressed model library, job metadata and published artefacts,
+# all of which must survive a restart.
 RUN set -eux; \
     useradd --create-home --home-dir /home/orca --uid 10001 --shell /usr/sbin/nologin orca; \
-    mkdir -p /work /app /tmp/xdg-orca; \
-    chown orca:orca /work /app /tmp/xdg-orca; \
+    mkdir -p /work /data /app /tmp/xdg-orca; \
+    chown orca:orca /work /data /app /tmp/xdg-orca; \
     chmod 700 /tmp/xdg-orca
 
 WORKDIR /app
 COPY --chown=orca:orca scripts/ /app/scripts/
 COPY --chown=orca:orca test/ /app/test/
 
-USER orca
+# The compiled API. `node_modules` keeps its workspace symlinks, so the relative layout
+# (/app/node_modules, /app/apps/api, /app/packages/shared) must match the build stage.
+COPY --from=build --chown=orca:orca /src/node_modules /app/node_modules
+COPY --from=build --chown=orca:orca /src/package.json /app/package.json
+COPY --from=build --chown=orca:orca /src/packages/shared/package.json /app/packages/shared/package.json
+COPY --from=build --chown=orca:orca /src/packages/shared/dist /app/packages/shared/dist
+COPY --from=build --chown=orca:orca /src/apps/api/package.json /app/apps/api/package.json
+COPY --from=build --chown=orca:orca /src/apps/api/dist /app/apps/api/dist
 
-CMD ["node", "--version"]
+USER orca
+EXPOSE 8080
+
+CMD ["node", "/app/apps/api/dist/index.js"]

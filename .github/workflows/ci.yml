@@ -60,6 +60,16 @@ jobs:
       - name: Smoke slice (headless, no display server)
         run: docker compose run --rm smoke
 
+      # The M1 acceptance criterion, and the working agreement's "the CI suite must
+      # include at least one real slice": three concurrent slices through the HTTP API,
+      # progress streamed for each, and /work empty afterwards. The engine is not
+      # mocked here.
+      - name: Slice service acceptance (three concurrent real slices)
+        run: docker compose run --rm integration
+
+      - name: Assert /work is not accumulating between runs
+        run: docker compose run --rm --entrypoint sh integration -c 'ls -A /work | wc -l | grep -qx 0'
+
       - name: Assert no display server was involved
         # Belt and braces: the runner must not have had an X server for the slice to
         # have proven anything. The smoke script asserts this too.

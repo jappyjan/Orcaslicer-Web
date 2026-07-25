@@ -9,8 +9,10 @@ Read [`docs/SPEC.md`](docs/SPEC.md) before contributing. It is the authoritative
 mission, hard constraints, non-goals, settled stack decisions, and a reference section on
 how the OrcaSlicer CLI actually behaves.
 
-**Status: M0 complete.** The container and the slicing smoke test exist. There is no HTTP
-API and no UI yet — those are M1 and M3. See the milestone list in the spec.
+**Status: M1 complete.** The container, the slicing smoke test and the slice service
+exist: `POST /jobs`, SSE progress, artefact downloads, cancellation, a
+concurrency-limited queue and guaranteed sandbox cleanup. There is no profile catalog and
+no UI yet — those are M2 and M3. See the milestone list in the spec.
 
 Licensing: this project is AGPL-3.0-or-later and ships an unmodified AGPL OrcaSlicer
 binary. See [`AGPL-NOTICE.md`](AGPL-NOTICE.md).
@@ -38,6 +40,8 @@ Requires Docker with Compose v2+. Nothing else — no local Node needed for the 
 docker compose build
 docker compose run --rm smoke        # slice a bundled 20mm cube, assert the artefacts
 docker compose run --rm help-check   # assert the CLI surface has not drifted
+docker compose run --rm integration  # M1 acceptance: three concurrent real slices
+docker compose up api                # the slice service on http://localhost:8080
 ```
 
 `smoke` is the M0 acceptance criterion. It slices `test/fixtures/cube20.stl` with stock
@@ -66,12 +70,57 @@ Drop into the image with the slicer on `PATH`:
 docker compose run --rm shell
 ```
 
+## The slice service (M1)
+
+`docker compose up api` starts it on `:8080`. Everything is JSON except the multipart
+upload and the artefact downloads.
+
+| Endpoint                        |                                                            |
+| ------------------------------- | ---------------------------------------------------------- |
+| `POST /jobs`                    | multipart: model files + a `descriptor` JSON field → `202` |
+| `GET /jobs/:id`                 | state, progress, warnings, stats, artefacts                |
+| `GET /jobs/:id/events`          | SSE: `state`, `progress`, `done`, `failed`                 |
+| `GET /jobs/:id/artifacts/:name` | `result.gcode.3mf` and `plate_N.gcode`                     |
+| `DELETE /jobs/:id`              | cancel and clean up → `204`                                |
+| `POST /models`                  | upload without slicing → content ids                       |
+| `GET /healthz`                  | engine version and queue depth                             |
+
+```bash
+curl -X POST localhost:8080/jobs \
+  -F 'descriptor={"printer":{"kind":"machine","vendor":"BBL","name":"Bambu Lab X1 Carbon 0.4 nozzle"},
+                  "process":{"kind":"process","vendor":"BBL","name":"0.20mm Standard @BBL X1C"},
+                  "filaments":[{"kind":"filament","vendor":"BBL","name":"Bambu PLA Basic @BBL X1C"}],
+                  "input":{"kind":"models","models":[{"source":"upload","filename":"cube20.stl"}]}}' \
+  -F 'files=@test/fixtures/cube20.stl'
+```
+
+Uploads are stored content-addressed and persist, so re-slicing at different settings
+costs no upload: reuse the `models[].id` from the response with
+`{"source":"library","id":"sha256:..."}`. The library is bounded by
+`MODEL_LIBRARY_MAX_BYTES` with an LRU/TTL sweeper.
+
+Two directories, with opposite lifetimes:
+
+- **`/work`** — one disposable sandbox per job, `rm -rf`ed on success, failure, timeout
+  and cancellation alike (hard constraint #4). It holds nothing between jobs.
+- **`/data`** — the SQLite database, the model library and published artefacts. Mount a
+  volume here.
+
+Configuration is environment variables with defensible defaults; they are listed and
+justified in [`apps/api/src/config.ts`](apps/api/src/config.ts). The ones worth knowing:
+`SLICE_CONCURRENCY` (default: CPU count − 1; slicing is CPU-bound),
+`SLICE_TIMEOUT_MS`, `QUEUE_DRIVER` (`memory` — the shipped default — or `bullmq`, which
+is stubbed and throws), `MODEL_LIBRARY_MAX_BYTES`.
+
+Design decisions behind the boundaries: [`docs/adr/`](docs/adr/).
+
 ## Working on the code
 
 ```bash
 npm install         # Node 22 required
 npm run check       # format check + lint + typecheck + unit tests
-npm test            # vitest, all workspaces
+npm test            # vitest, unit project (no slicer binary needed)
+npm run test:integration   # the real-slice acceptance test, inside the container
 ```
 
 Layout and the reasoning behind it: [`docs/REPO-LAYOUT.md`](docs/REPO-LAYOUT.md).

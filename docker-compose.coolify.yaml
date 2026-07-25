@@ -1,0 +1,84 @@
+# OrcaSlicer Web — Coolify deployment stack.
+#
+# Runtime only: one service, two volumes, no test/smoke/help-check services. For local
+# development and the verification suite use `docker-compose.yml` instead.
+#
+# In Coolify:
+#   1. New Resource → Docker Compose, pointed at this repository.
+#   2. Set "Docker Compose Location" to `/docker-compose.coolify.yaml`.
+#   3. Deploy. Coolify generates a domain from SERVICE_FQDN_ORCASLICER_8080 below and
+#      routes its proxy to port 8080 — do not publish a host port as well.
+#
+# Everything written as ${VAR:-default} is surfaced as an editable environment variable
+# in Coolify's UI, with the default applied when left blank.
+
+services:
+  orcaslicer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+
+    # The slicer is a child process per job and the API kills it by process group on
+    # timeout or cancellation. An init process reaps anything that outlives its parent.
+    init: true
+
+    environment:
+      # Coolify magic variable: generates the FQDN and wires its proxy to port 8080.
+      # Append a path (…_8080=/api) only if this is not served at the domain root.
+      SERVICE_FQDN_ORCASLICER_8080: ''
+
+      # --- Capacity -------------------------------------------------------------
+      # Slicing is CPU-bound and saturates a core. Defaults to (CPU count - 1) when
+      # blank. Budget roughly 1 GB of RAM per concurrent slice — on a 2 GB VPS set
+      # this to 1 regardless of core count, or the OOM killer decides for you.
+      SLICE_CONCURRENCY: ${SLICE_CONCURRENCY:-}
+      # Wall-clock ceiling per job, after which the process group is killed.
+      SLICE_TIMEOUT_MS: ${SLICE_TIMEOUT_MS:-900000}
+      # Engine-side second line of defence (--mstpp / --mtcpp).
+      MAX_SECONDS_PER_PLATE: ${MAX_SECONDS_PER_PLATE:-600}
+      MAX_TRIANGLES_PER_PLATE: ${MAX_TRIANGLES_PER_PLATE:-20000000}
+
+      # --- Disk -----------------------------------------------------------------
+      # The content-addressed model library evicts LRU past this total. Uploaded models
+      # persist so a re-slice needs no re-upload; this is the ceiling on that.
+      MODEL_LIBRARY_MAX_BYTES: ${MODEL_LIBRARY_MAX_BYTES:-4294967296}
+      MODEL_TTL_MS: ${MODEL_TTL_MS:-2592000000}
+      # Job rows and their artefacts are swept after this.
+      JOB_RETENTION_MS: ${JOB_RETENTION_MS:-604800000}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-536870912}
+
+      # --- Queue ----------------------------------------------------------------
+      # "memory" is the shipped in-process queue and needs no Redis. "bullmq" selects
+      # the stubbed adapter, which is not implemented yet — leave this alone.
+      QUEUE_DRIVER: ${QUEUE_DRIVER:-memory}
+
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+    volumes:
+      # Persistent. SQLite job metadata, the model library, published artefacts.
+      # This is the only volume whose loss actually costs the user anything.
+      - orca-data:/data
+      # Disposable per-job sandboxes (hard constraint #4). Emptied on every exit path
+      # and again at boot. A real volume rather than a tmpfs on purpose: a single job
+      # can leave 200–500 MB of intermediates, and on a small VPS that is RAM you do
+      # not have. Never point this at the same volume as /data.
+      - orca-work:/work
+
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # The profile catalog is read once at start-up; give it room before the first probe.
+      start_period: 40s
+
+volumes:
+  orca-data:
+  orca-work:

@@ -226,9 +226,14 @@ touches the CLI.
    - `scripts/resolve-profile.mjs` is the M0 stopgap resolver. **M2's profile
      catalog owns this properly** and replaces it.
 2. **Never combine `--outputdir` with an absolute `--export-3mf` path.** They are
-   concatenated (`/work/out//work/out/x.3mf`) and export fails with
-   `return -13` — **but the process still exits 0.** Exit code alone is not a
-   success signal. Always assert the artefact exists and is non-empty.
+   concatenated (`/work/out//work/out/x.3mf`) and the export fails with
+   `return -13`, producing no artefact.
+   *Measurements disagree on the exit status:* M0 observed exit **0**; M1
+   observed exit **243** (which is `-13` truncated to 8 bits, see #8). We have not
+   isolated what differs between the two runs. **The code therefore assumes
+   neither** — it checks the exit status *and* asserts the artefact exists and is
+   non-empty. Treat "exit code alone is never a sufficient success signal" as the
+   durable rule here; it holds whichever measurement is right.
 3. **`--filament-colour` is not an advertised flag in 2.4.2's `--help`**, despite
    appearing in the canonical invocation above. It presumably still works as a raw
    `PrintConfig` key (`filament_colour`); verify before relying on it.
@@ -245,6 +250,31 @@ touches the CLI.
 7. **Set `XDG_RUNTIME_DIR`** or every run emits `error: XDG_RUNTIME_DIR is invalid
    or not set` to stderr. Non-fatal, but it pollutes stderr parsing. The image
    already sets it.
+
+### Added in M1 — measured while building the engine adapter
+
+8. **Negative exit codes reach the shell truncated to 8 bits.** Upstream returns
+   `-3`, `-5`, `-13`; the shell sees `253`, `251`, `243`. **A lookup table keyed on
+   the raw status matches nothing.** Normalise before mapping. The full 46-code
+   table lives in `apps/api/src/engine/orca/exit-codes.ts`, taken from upstream
+   `src/libslic3r/Utils.hpp` at v2.4.2.
+9. **Every invocation writes `result.json` into the current working directory —
+   including `--help`.** `--load-assemble-list` additionally drops `NNNNN.log` and
+   a raw `plate_N.gcode` there. **Setting the child process's `cwd` to the sandbox
+   is load-bearing, not cosmetic**; this littered the repo root twice before
+   `probe()` was pinned to a scratch directory.
+10. **The progress pipe usually omits `warning` entirely rather than sending
+    `null`**, and emits far fewer lines than you would expect — 9 for a cube,
+    starting around 35 %. Do not build UI that assumes a smooth 0→100 ramp.
+11. **admesh's ASCII/binary STL sniffing is fragile.** A byte > 127 must appear
+    within 128 bytes of offset 80. A small box with zeroed normals fails with
+    `CLI_DATA_FILE_ERROR` at 10 mm and 15 mm but loads fine at 19 mm and 20 mm.
+    Emitting real normals fixes it. **Relevant to any geometry we generate
+    server-side (M4).**
+12. Upstream's own error message strings are written for a Bambu upload pipeline
+    and are misleading in our context. Never forward them to the user; map to our
+    own typed errors. A stderr diagnostic match should beat the exit-code table
+    (that is how the `G92 E0` / relative-extruder case is detected).
 
 ### Environment notes for local development
 - The Docker daemon is not running at session start in the dev container; start it

@@ -134,6 +134,29 @@ export interface PlateSpec {
 export type JobInput =
   { kind: 'plates'; plates: PlateSpec[] } | { kind: 'models'; models: ModelRef[] };
 
+/**
+ * One setting's value, in the shape the config schema says it has.
+ *
+ * An array means a per-extruder / per-filament vector (`ConfigOptionSchema.isArray`), not
+ * a list the user typed. `null` means "unset" and is only legal for a `nullable` option —
+ * the `filament_*` twins of an extruder setting, which the engine writes as `nil`.
+ *
+ * The *element types matter*: an engine adapter is entitled to serialise a vector of
+ * numbers differently from a vector of strings, and OrcaSlicer's CLI does exactly that
+ * (SPEC deviation #25). Send numbers as numbers.
+ */
+export type SettingValue =
+  string | number | boolean | ReadonlyArray<string | number | boolean> | null;
+
+/**
+ * The keys a job changes relative to its presets — M6's diff-and-override.
+ *
+ * These are applied at the highest priority the settings stack has (SPEC: command-line
+ * flags outrank `--load-settings` files, which outrank the 3MF), which is why the
+ * frontend never writes a new profile file: an override is a flag, and a flag wins.
+ */
+export type SettingOverrides = Record<string, SettingValue>;
+
 /** The body of `POST /jobs`, sent as the `descriptor` multipart field (JSON). */
 export interface JobRequest {
   /** Free-text label shown in the UI. */
@@ -148,10 +171,65 @@ export interface JobRequest {
   plate?: number;
   /**
    * Raw config-key overrides applied with the highest priority, e.g.
-   * `{ layer_height: 0.28 }`. M6 drives this; M1 only has to carry it.
+   * `{ layer_height: 0.28 }`. M6 drives this; M1 only had to carry it.
    */
-  overrides?: Record<string, string | number | boolean>;
+  overrides?: SettingOverrides;
   input: JobInput;
+}
+
+// ---------------------------------------------------------------------------
+// Settings (M6)
+// ---------------------------------------------------------------------------
+
+/** Which of the three presets a key's current value came from. */
+export type SettingSource = 'machine' | 'process' | 'filament';
+
+/**
+ * `GET /settings/resolved` — the values a slice would use *before* any override.
+ *
+ * This is the thing "modified from the preset" is measured against, and it is
+ * deliberately **not** the compiled-in `PrintConfig` default: confusing the two is
+ * exactly SPEC deviation #1's failure mode. A key that appears in {@link values} came
+ * from a preset; a key that does not is one the CLI would fall back to its built-in
+ * default for, and the UI has to be able to say which.
+ */
+export interface ResolvedSettings {
+  /** Fully flattened machine ⊕ process ⊕ filament, in the order the engine applies them. */
+  values: Record<string, SettingValue>;
+  /** Which preset supplied each key of {@link values}. */
+  sources: Record<string, SettingSource>;
+  /** The presets this was resolved from, for display and for staleness checks. */
+  presets: { machine: PresetRef; process: PresetRef; filament: PresetRef };
+}
+
+/**
+ * A named set of overrides, saved by the user.
+ *
+ * **Ours, not OrcaSlicer's.** These live in this application's own database and are never
+ * written into the slicer's `resources/profiles` tree: hard constraint #1 keeps the
+ * upstream install unmodified, and deviation #1 means a half-written preset file there
+ * would silently slice wrong. A user preset is a diff applied on top of a catalog preset,
+ * never a replacement for one.
+ */
+export interface UserPreset {
+  id: string;
+  name: string;
+  overrides: SettingOverrides;
+  /** The catalog presets it was captured against. Advisory — it can be applied anywhere. */
+  basedOn: { machine?: PresetRef; process?: PresetRef; filament?: PresetRef } | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** `POST /settings/presets` / `PUT /settings/presets/:id`. */
+export interface SaveUserPresetRequest {
+  name: string;
+  overrides: SettingOverrides;
+  basedOn?: UserPreset['basedOn'];
+}
+
+export interface UserPresetListResponse {
+  presets: UserPreset[];
 }
 
 // ---------------------------------------------------------------------------

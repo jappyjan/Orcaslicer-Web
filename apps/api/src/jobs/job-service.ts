@@ -19,9 +19,12 @@ import type {
   ModelTransform,
   PresetRef,
   ResolvedProfile,
+  SettingOverrides,
 } from '@orca-web/shared';
+import type { ConfigSchemaDocument } from '@orca-web/catalog';
 import type { AppConfig } from '../config.js';
 import { SliceError, toSliceError } from '../engine/errors.js';
+import { UnknownSettingError, coerceOverrides } from '../settings/schema.js';
 import { MeshError, bakeTransform, isIdentityTransform } from '../geometry/mesh.js';
 import type {
   ArrangePlacement,
@@ -66,6 +69,13 @@ export interface JobServiceDeps {
   config: AppConfig;
   engine: SlicerEngine;
   resolver: ProfileResolver;
+  /**
+   * M2's generated config schema, used to validate M6's overrides before they become
+   * engine arguments. Absent when the server booted without the generated artefacts, in
+   * which case overrides are passed through unvalidated — the engine still refuses a key
+   * that is not a config identifier.
+   */
+  settingsSchema?: ConfigSchemaDocument | undefined;
   jobs: JobStore;
   models: ModelStore;
   artifacts: ArtifactStore;
@@ -132,6 +142,7 @@ export class JobService {
     // Fail fast: a bad preset name is a 4xx on submit, not a job that fails a minute
     // later. Resolution is cached, so the worker's own resolve() is free.
     await this.resolveProfiles(request);
+    const overrides = this.validateOverrides(request.overrides);
 
     const byFilename = new Map(uploads.map((upload) => [upload.filename, upload.model]));
     const used = new Map<string, ModelSummary>();
@@ -157,14 +168,18 @@ export class JobService {
       return { source: 'library', id: model.id };
     };
 
+    // `overrides` is stored in its coerced form, so a re-slice of a persisted request
+    // reproduces the same command line rather than re-guessing the value shapes.
     const normalised: JobRequest =
       request.input.kind === 'models'
         ? {
             ...request,
+            overrides,
             input: { kind: 'models', models: request.input.models.map(resolveRef) },
           }
         : {
             ...request,
+            overrides,
             input: {
               kind: 'plates',
               plates: request.input.plates.map((plate) => ({
@@ -465,6 +480,30 @@ export class JobService {
   // -------------------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------------------
+
+  /**
+   * M6's overrides, checked against the generated config schema before they can become
+   * engine arguments.
+   *
+   * Rejecting rather than dropping is the point: an override the server silently ignored
+   * would slice with the preset's value while the UI went on showing the user's, which is
+   * the same class of quiet-wrong-output failure as SPEC deviation #1.
+   */
+  private validateOverrides(raw: JobRequest['overrides']): SettingOverrides {
+    if (raw === undefined) return {};
+    if (typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new BadRequestError('"overrides" must be an object of setting keys');
+    }
+    const schema = this.deps.settingsSchema;
+    if (schema === undefined) return raw;
+    try {
+      return coerceOverrides(schema, raw as Record<string, unknown>);
+    } catch (error) {
+      if (error instanceof UnknownSettingError)
+        throw new BadRequestError(error.message, error.hint);
+      throw error;
+    }
+  }
 
   private publishState(jobId: string, state: JobSummary['state']): void {
     this.deps.events.publish(jobId, { type: 'state', jobId, state, at: new Date().toISOString() });

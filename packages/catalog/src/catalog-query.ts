@@ -194,6 +194,16 @@ export class ProfileCatalogQuery {
     return out;
   }
 
+  /**
+   * The generated config schema, when the catalog was opened with it.
+   *
+   * M6 needs the option definitions on the server too — not to render anything, but to
+   * validate the overrides a client sends before they become argv (`apps/api/src/settings`).
+   */
+  configSchema(): ConfigSchemaDocument | undefined {
+    return this.schema;
+  }
+
   /** Compiled-in `PrintConfig` defaults, keyed by option. Requires the config schema. */
   printConfigDefaults(): Record<string, unknown> {
     if (this.defaults) return this.defaults;

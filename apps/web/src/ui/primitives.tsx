@@ -5,12 +5,15 @@
  *
  * Note what is absent: there is no icon-only button, no tooltip, no hover state and no
  * drag affordance. Hard constraint #5 — a thumb cannot hover, and a 24px icon is not a
- * target.
+ * target. The layout puts a toolbar over the 3D view the way the desktop build does, but
+ * the *buttons* on that toolbar are {@link ToolButton}s: a 48px icon with its name printed
+ * under it, because the desktop original relies on a tooltip and a tooltip needs a pointer.
  */
 
 import type { ApiError } from '@orca-web/shared';
 import type { ReactNode } from 'react';
 import { useEffect, useRef } from 'react';
+import { Icon, type IconName } from './icons.tsx';
 
 export function Button({
   children,
@@ -193,7 +196,13 @@ export function Sheet({
       aria-modal="true"
       aria-label={title}
       data-testid={testId}
-      className="sheet-in fixed inset-0 z-50 flex flex-col bg-ink"
+      /*
+       * Full-screen on a phone, a centred card from 640px up. The card is the only
+       * concession the layout makes to a mouse: 384 printers in a 1600px-wide column
+       * would be one word per line, and the workspace behind it stays visible, which is
+       * the whole point of putting the 3D view first.
+       */
+      className="sheet-in fixed inset-0 z-50 flex flex-col bg-ink sm:inset-y-6 sm:left-1/2 sm:w-[34rem] sm:-translate-x-1/2 sm:rounded-2xl sm:border sm:border-line sm:shadow-2xl"
     >
       <header className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2">
         {onBack ? (
@@ -336,5 +345,166 @@ export function Spinner({ label }: { label: string }) {
     <p className="pulse-soft py-6 text-center text-sm text-muted" role="status">
       {label}
     </p>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The floating layer: what sits *on* the 3D view rather than in a column under it.
+// ---------------------------------------------------------------------------
+
+/**
+ * A button on a floating toolbar: icon above, name below, 48px minimum in both axes.
+ *
+ * The caption is not decoration. OrcaSlicer's desktop toolbar is icon-only and explains
+ * itself with tooltips; the same toolbar on a phone would be nine unlabelled squares. At
+ * 9px the caption costs 11px of height and removes the guesswork, which is the trade the
+ * rest of this app already makes everywhere else.
+ */
+export function ToolButton({
+  icon,
+  label,
+  caption,
+  onClick,
+  selected = false,
+  disabled = false,
+  danger = false,
+  testId,
+}: {
+  icon: IconName;
+  /** The accessible name, and the caption unless `caption` overrides it. */
+  label: string;
+  /** A shorter caption when the full name will not fit — "+1" for "one layer up". */
+  caption?: string;
+  onClick: () => void;
+  selected?: boolean;
+  disabled?: boolean;
+  danger?: boolean;
+  testId?: string;
+}) {
+  const palette = selected
+    ? 'border-accent bg-accent text-accent-ink'
+    : danger
+      ? 'border-transparent text-danger active:bg-danger/15'
+      : 'border-transparent text-text active:bg-surface-2';
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-pressed={selected}
+      aria-label={label}
+      data-testid={testId}
+      className={`tap flex w-rail flex-col items-center justify-center gap-0.5 rounded-xl border px-1 py-1.5 transition-colors disabled:opacity-35 ${palette}`}
+    >
+      <Icon name={icon} size={21} />
+      <span className="text-[0.5625rem] leading-none font-medium tracking-wide">
+        {caption ?? label}
+      </span>
+    </button>
+  );
+}
+
+/** The container a group of {@link ToolButton}s floats in. */
+export function ToolGroup({
+  children,
+  label,
+  orientation = 'vertical',
+}: {
+  children: ReactNode;
+  label: string;
+  orientation?: 'vertical' | 'horizontal';
+}) {
+  return (
+    <div
+      role="toolbar"
+      aria-label={label}
+      aria-orientation={orientation}
+      className={`glass flex gap-1 rounded-2xl p-1 ${orientation === 'vertical' ? 'flex-col' : 'flex-row'}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * A titled block inside the dock.
+ *
+ * The dock is one scrolling column on every screen size — a phone sheet and a desktop
+ * side panel are the same list at different heights — so the section header is what tells
+ * you where you are after a scroll.
+ */
+export function Panel({
+  title,
+  action,
+  children,
+  testId,
+}: {
+  title: string;
+  action?: ReactNode;
+  children: ReactNode;
+  testId?: string;
+}) {
+  return (
+    <section className="space-y-2" data-testid={testId}>
+      <div className="flex min-h-6 items-center justify-between gap-2">
+        <h2 className="text-[0.6875rem] font-semibold tracking-[0.08em] text-muted uppercase">
+          {title}
+        </h2>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/**
+ * A segmented control: two or three mutually exclusive choices, all visible at once.
+ *
+ * Used for the workspace tabs and the transform mode. A `<select>` would be smaller, but
+ * these are the app's primary navigation and a picker that hides the alternatives behind
+ * a tap is the wrong shape for something switched this often.
+ */
+export function Segmented<T extends string>({
+  options,
+  value,
+  onChange,
+  label,
+  testIdPrefix,
+  compact = false,
+}: {
+  options: ReadonlyArray<{ value: T; label: string; disabled?: boolean }>;
+  value: T;
+  onChange: (value: T) => void;
+  label: string;
+  testIdPrefix: string;
+  compact?: boolean;
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label={label}
+      className={`flex gap-1 rounded-xl border border-line bg-surface-2/70 p-1 ${
+        compact ? '' : 'w-full'
+      }`}
+    >
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="tab"
+          aria-selected={value === option.value}
+          disabled={option.disabled ?? false}
+          data-testid={`${testIdPrefix}-${option.value}`}
+          onClick={() => onChange(option.value)}
+          className={`tap flex-1 rounded-lg px-3 text-sm transition-colors disabled:opacity-35 ${
+            value === option.value
+              ? 'bg-accent text-accent-ink font-semibold'
+              : 'text-muted active:bg-line'
+          }`}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
   );
 }

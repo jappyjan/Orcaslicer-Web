@@ -15,8 +15,8 @@
  * There is **no transform gizmo**. Hard constraint #5, and the milestone says it outright:
  * drag handles are unusable with a thumb — they are small, they need hover to discover,
  * and the finger covers the thing being dragged. Objects are moved with the sliders and
- * number fields in `PlaterScreen`; the only thing a finger does in here is move the
- * camera and tap to select.
+ * number fields in `ui/ObjectPanel.tsx`, which floats over this view rather than sitting
+ * under it; the only thing a finger does in here is move the camera and tap to select.
  */
 
 import {
@@ -41,7 +41,7 @@ import type { BufferGeometry } from 'three';
 import type { BedSpec } from '@orca-web/shared';
 import type { FitProblem, Instance } from '../state/plate.ts';
 import { matrixOf, positionOf } from '../state/plate.ts';
-import { buildBed, disposeTree } from './bed.ts';
+import { buildBed, disposeTree, fitDistance, type Insets } from './bed.ts';
 import { TouchControls } from './touch-controls.ts';
 
 const COLOURS = {
@@ -75,6 +75,13 @@ export class PlaterScene {
   private dirty = true;
   private frame = 0;
   private disposed = false;
+  private offsetX = 0;
+  private offsetY = 0;
+  /** What a fit should get into frame: a centre and the radius of a sphere around it. */
+  private readonly fitCentre = new Vector3(128, 128, 0);
+  private fitRadius = 160;
+  /** How much of the canvas the panels are covering, in CSS pixels. */
+  private insets: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
 
   constructor(canvas: HTMLCanvasElement, callbacks: PlaterSceneCallbacks) {
     this.canvas = canvas;
@@ -154,8 +161,54 @@ export class PlaterScene {
     this.renderer.setPixelRatio(Math.min(globalThis.devicePixelRatio ?? 1, 2));
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
+    this.applyFrameOffset();
+    // A canvas that changed size is a rotation or a window resize, and both mean the
+    // plate should be re-fitted. Dragging the sheet does *not* come through here — it
+    // moves the picture without taking the zoom the user chose away from them.
+    this.fit();
+  }
+
+  /**
+   * How much of the canvas the floating panels are covering.
+   *
+   * Two things follow from it, and both are the price of a full-bleed canvas:
+   *
+   *  - the picture is **shifted** into what is left, with `setViewOffset` over a window
+   *    the same size as the frame, which slides the frustum instead of narrowing it.
+   *    `Raycaster` reads the same projection matrix, so tap-to-select keeps landing on
+   *    what it looks like it landed on.
+   *  - a **fit** has to reach the free rectangle, not the canvas. On a 390x844 phone with
+   *    the sheet at half height that is 310x335 of 390x844 — fitting the canvas would put
+   *    a third of the plate underneath the dock.
+   */
+  setViewport(insets: Insets): void {
+    this.insets = insets;
+    const dx = (insets.left - insets.right) / 2;
+    const dy = (insets.top - insets.bottom) / 2;
+    if (this.offsetX === dx && this.offsetY === dy) return;
+    this.offsetX = dx;
+    this.offsetY = dy;
+    this.applyFrameOffset();
+  }
+
+  private applyFrameOffset(): void {
+    const width = this.canvas.clientWidth || 1;
+    const height = this.canvas.clientHeight || 1;
+    if (this.offsetX === 0 && this.offsetY === 0) {
+      this.camera.clearViewOffset();
+    } else {
+      this.camera.setViewOffset(width, height, -this.offsetX, -this.offsetY, width, height);
+    }
     this.camera.updateProjectionMatrix();
     this.invalidate();
+  }
+
+  /** Back the camera off far enough that {@link fitRadius} clears the free rectangle. */
+  private fit(): void {
+    this.controls.frame(
+      this.fitCentre,
+      fitDistance(this.camera, this.canvas, this.insets, this.fitRadius),
+    );
   }
 
   // -- the plate ------------------------------------------------------------
@@ -183,12 +236,11 @@ export class PlaterScene {
     this.bedGroup.add(view.group);
     this.bedSize = view.size;
 
-    // 1.25 x the plate's longest side, looking slightly above it: the plate fills the
-    // viewport on a 390px screen without the near corner falling out of frame.
-    this.controls.frame(
-      new Vector3(view.centre.x, view.centre.y, this.bedSize * 0.06),
-      this.bedSize * 1.25,
-    );
+    // Looking slightly above the plate, from far enough that 1.25 x its longest side
+    // clears whatever the panels are not covering.
+    this.fitCentre.set(view.centre.x, view.centre.y, this.bedSize * 0.06);
+    this.fitRadius = this.bedSize * 0.62;
+    this.fit();
     this.invalidate();
   }
 
@@ -317,12 +369,15 @@ export class PlaterScene {
     this.callbacks.onSelect(typeof hit === 'string' ? hit : null);
   }
 
+  /** The camera buttons re-fit as well as re-aim: "3D" and "Top" mean "show me the plate". */
   resetView(): void {
     this.controls.reset();
+    this.fit();
   }
 
   topView(): void {
     this.controls.top();
+    this.fit();
   }
 
   // -- the plate preview ----------------------------------------------------
@@ -357,6 +412,9 @@ export class PlaterScene {
       this.renderer.setPixelRatio(1);
       this.renderer.setSize(size, size, false);
       this.camera.aspect = 1;
+      // The on-screen picture is nudged out from under the dock; the printer's thumbnail
+      // is square and has no dock, so it is rendered from the unshifted frustum.
+      this.camera.clearViewOffset();
 
       const target = this.controls.target.clone();
       const distance = this.bedSize * 1.5;
@@ -379,10 +437,9 @@ export class PlaterScene {
       this.camera.position.copy(previousPosition);
       this.camera.up.copy(previousUp);
       this.camera.quaternion.copy(previousQuaternion);
-      this.camera.updateProjectionMatrix();
       this.renderer.setPixelRatio(previousRatio);
       this.renderer.setSize(previousSize.x, previousSize.y, false);
-      this.invalidate();
+      this.applyFrameOffset();
     }
   }
 }

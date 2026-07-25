@@ -1,19 +1,23 @@
 /**
- * Progress, then results.
+ * Progress, then results — as a panel over the plate rather than as a screen instead of it.
+ *
+ * That is the one behavioural change the new layout makes here, and it is the point of the
+ * layout: a slice no longer replaces what you were looking at. The plate stays on screen
+ * while it runs, the warnings arrive next to it, and when it finishes the toolpath is one
+ * tap away in the same viewport.
  *
  * The progress half is built around SPEC verified deviation #10 and the measurement that
- * confirmed it for this milestone: a 20 mm cube produced **two** progress frames, the
- * first at **70 %**. So:
+ * confirmed it: a 20 mm cube produced **two** progress frames, the first at **70 %**. So:
  *
  *  - before the first number the bar is an indeterminate sweep, never a 0 % bar;
- *  - after a {@link QUIET_AFTER_MS} gap it keeps animating and says the slicer is still
- *    working, because with nine frames per job a long silence is normal;
+ *  - after a quiet gap it keeps animating and says the slicer is still working, because
+ *    with nine frames per job a long silence is normal;
  *  - the percentage is only rendered once it means something;
  *  - warnings appear the moment they arrive and stay on the results panel afterwards.
  *
- * The results half shows exactly what the spec asks for — time, grams, metres, layer
- * count — and offers both downloads, because Bambu printers want the `.gcode.3mf`
- * project file while everything else wants the plain `.gcode`.
+ * The results half shows exactly what the spec asks for — time, grams, metres, layer count
+ * — and offers both downloads, because Bambu printers want the `.gcode.3mf` project file
+ * while everything else wants the plain `.gcode`.
  */
 
 import type { ArtifactSummary, JobSummary, SliceStats } from '@orca-web/shared';
@@ -26,7 +30,7 @@ import {
   formatMetres,
 } from '../format.ts';
 import { barState, isActive, isQuiet, type ProgressModel } from '../state/progress.ts';
-import { Button, ErrorNotice, WarningList } from './primitives.tsx';
+import { Button, ErrorNotice, Panel, WarningList } from './primitives.tsx';
 
 const STATE_LABELS: Record<string, string> = {
   submitting: 'Sending to the slicer',
@@ -49,25 +53,24 @@ const STATE_LABELS: Record<string, string> = {
  */
 export type PreviewState = 'none' | 'uploading' | 'done' | 'failed';
 
-export function JobScreen({
+export function JobPanel({
   model,
-  progress,
   now,
   onCancel,
   onSliceAgain,
-  onBack,
+  onDismiss,
   onPreview,
   cancelling,
   preview = 'none',
 }: {
   model: ProgressModel;
-  progress: { name: string; subtitle: string };
   now: number;
   onCancel: () => void;
   onSliceAgain: () => void;
-  onBack: () => void;
+  /** Put the job away and go back to an ordinary plate. */
+  onDismiss: () => void;
   /** Open M5's G-code preview. Absent when the job has no G-code to look at. */
-  onPreview?: () => void;
+  onPreview?: (() => void) | undefined;
   cancelling: boolean;
   preview?: PreviewState;
 }) {
@@ -76,76 +79,69 @@ export function JobScreen({
   const bar = barState(model);
 
   return (
-    <div className="mx-auto flex min-h-dvh w-full max-w-[30rem] flex-col">
-      <header className="px-4 pt-4 pb-2">
-        <h1 className="truncate text-xl font-semibold">{progress.name}</h1>
-        <p className="truncate text-sm text-muted">{progress.subtitle}</p>
-      </header>
-
-      <main className="flex-1 space-y-4 px-4 pb-4">
-        <section
-          className="rounded-xl border border-line bg-surface p-4"
-          aria-live="polite"
-          data-testid="progress-panel"
-          data-bar-state={bar}
-        >
-          <div className="flex items-baseline justify-between gap-3">
-            <p className="text-base font-semibold" data-testid="job-state">
-              {STATE_LABELS[model.state] ?? model.state}
-            </p>
-            {bar === 'determinate' || bar === 'complete' ? (
-              <p className="text-base tabular-nums text-accent" data-testid="job-percent">
-                {Math.round(model.percent)}%
-              </p>
-            ) : null}
-          </div>
-
-          <ProgressBar state={bar} percent={model.percent} />
-
-          <p className="mt-2 text-sm text-muted" data-testid="job-message">
-            {model.message ??
-              (model.state === 'queued'
-                ? 'Another job is using the slicer.'
-                : 'Preparing the sandbox…')}
+    <Panel title={active ? 'Slicing' : 'Result'} testId="job-panel">
+      <section
+        className="rounded-xl border border-line bg-surface p-3"
+        aria-live="polite"
+        data-testid="progress-panel"
+        data-bar-state={bar}
+      >
+        <div className="flex items-baseline justify-between gap-3">
+          <p className="text-base font-semibold" data-testid="job-state">
+            {STATE_LABELS[model.state] ?? model.state}
           </p>
-
-          {model.plateCount > 1 ? (
-            <p className="mt-1 text-sm text-muted">
-              Plate {Math.max(1, model.plateIndex)} of {model.plateCount}
+          {bar === 'determinate' || bar === 'complete' ? (
+            <p className="text-base tabular-nums text-accent" data-testid="job-percent">
+              {Math.round(model.percent)}%
             </p>
           ) : null}
+        </div>
 
-          {/*
-            A gap in the stream is normal — the pipe emits ~9 lines per job — so this is
-            reassurance, not a warning. Without it a 20-second silence looks like a hang.
-          */}
-          {quiet ? (
-            <p className="mt-2 text-sm text-warn" data-testid="job-quiet">
-              Still working. OrcaSlicer only reports progress a handful of times per job.
-            </p>
-          ) : null}
+        <ProgressBar state={bar} percent={model.percent} />
 
-          {model.degraded ? (
-            <p className="mt-2 text-sm text-muted" data-testid="job-degraded">
-              Live updates dropped out; checking every few seconds instead.
-            </p>
-          ) : null}
+        <p className="mt-2 text-sm text-muted" data-testid="job-message">
+          {model.message ??
+            (model.state === 'queued'
+              ? 'Another job is using the slicer.'
+              : 'Preparing the sandbox…')}
+        </p>
 
-          {active ? (
-            <p className="mt-2 text-sm text-muted tabular-nums">
-              {formatElapsed(now - model.startedAt)} elapsed
-            </p>
-          ) : null}
-        </section>
+        {model.plateCount > 1 ? (
+          <p className="mt-1 text-sm text-muted">
+            Plate {Math.max(1, model.plateIndex)} of {model.plateCount}
+          </p>
+        ) : null}
 
-        <WarningList warnings={model.warnings} />
+        {/*
+          A gap in the stream is normal — the pipe emits ~9 lines per job — so this is
+          reassurance, not a warning. Without it a 20-second silence looks like a hang.
+        */}
+        {quiet ? (
+          <p className="mt-2 text-sm text-warn" data-testid="job-quiet">
+            Still working. OrcaSlicer only reports progress a handful of times per job.
+          </p>
+        ) : null}
 
-        {model.error ? <ErrorNotice error={model.error} testId="job-error" /> : null}
+        {model.degraded ? (
+          <p className="mt-2 text-sm text-muted" data-testid="job-degraded">
+            Live updates dropped out; checking every few seconds instead.
+          </p>
+        ) : null}
 
-        {model.job ? <Results job={model.job} preview={preview} /> : null}
-      </main>
+        {active ? (
+          <p className="mt-2 text-sm text-muted tabular-nums">
+            {formatElapsed(now - model.startedAt)} elapsed
+          </p>
+        ) : null}
+      </section>
 
-      <footer className="sticky bottom-0 space-y-2 border-t border-line bg-ink/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur">
+      <WarningList warnings={model.warnings} />
+
+      {model.error ? <ErrorNotice error={model.error} testId="job-error" /> : null}
+
+      {model.job ? <Results job={model.job} preview={preview} /> : null}
+
+      <div className="space-y-2">
         {active ? (
           <Button variant="danger" onClick={onCancel} disabled={cancelling} testId="cancel-button">
             {cancelling ? 'Cancelling…' : 'Cancel'}
@@ -153,20 +149,20 @@ export function JobScreen({
         ) : (
           <>
             {onPreview && model.job?.artifacts.some((artifact) => artifact.role === 'gcode') ? (
-              <Button variant="secondary" onClick={onPreview} testId="preview-button">
+              <Button onClick={onPreview} testId="preview-button">
                 Preview G-code
               </Button>
             ) : null}
-            <Button onClick={onSliceAgain} testId="slice-again-button">
+            <Button variant="secondary" onClick={onSliceAgain} testId="slice-again-button">
               Slice again
             </Button>
-            <Button variant="secondary" onClick={onBack} testId="back-button">
-              Change settings
+            <Button variant="ghost" onClick={onDismiss} testId="dismiss-job-button">
+              Back to the plate
             </Button>
           </>
         )}
-      </footer>
-    </div>
+      </div>
+    </Panel>
   );
 }
 
@@ -212,9 +208,8 @@ function Results({ job, preview }: { job: JobSummary; preview: PreviewState }) {
 
 function StatsPanel({ stats }: { stats: SliceStats }) {
   return (
-    <section className="rounded-xl border border-line bg-surface p-4" data-testid="results-stats">
-      <h2 className="mb-3 text-xs tracking-wide text-muted uppercase">Result</h2>
-      <dl className="grid grid-cols-2 gap-3">
+    <section className="rounded-xl border border-line bg-surface p-3" data-testid="results-stats">
+      <dl className="grid grid-cols-2 gap-2">
         <Stat
           label="Print time"
           value={formatDuration(stats.predictionSeconds)}
@@ -230,7 +225,7 @@ function StatsPanel({ stats }: { stats: SliceStats }) {
       </dl>
 
       {stats.plates.length > 1 ? (
-        <div className="mt-4 space-y-2">
+        <div className="mt-3 space-y-2">
           <h3 className="text-xs tracking-wide text-muted uppercase">Per plate</h3>
           {stats.plates.map((plate) => (
             <p key={plate.index} className="text-sm text-muted">
@@ -245,7 +240,7 @@ function StatsPanel({ stats }: { stats: SliceStats }) {
       ) : null}
 
       {stats.plates[0] && stats.plates[0].filaments.length > 0 ? (
-        <div className="mt-4 space-y-1">
+        <div className="mt-3 space-y-1">
           <h3 className="text-xs tracking-wide text-muted uppercase">Filament use</h3>
           {stats.plates.flatMap((plate) =>
             plate.filaments.map((filament) => (
@@ -296,14 +291,13 @@ function Downloads({
 }) {
   if (artifacts.length === 0) return null;
   return (
-    <section className="rounded-xl border border-line bg-surface p-4" data-testid="downloads">
-      <h2 className="mb-1 text-xs tracking-wide text-muted uppercase">Download</h2>
-      <p className="mb-3 text-sm text-muted">
+    <section className="rounded-xl border border-line bg-surface p-3" data-testid="downloads">
+      <p className="mb-2 text-sm text-muted">
         Bambu Lab printers want the project file; most others want the plain G-code.
       </p>
       {PREVIEW_LABELS[preview] ? (
         <p
-          className="mb-3 text-sm text-muted"
+          className="mb-2 text-sm text-muted"
           data-testid="preview-status"
           data-state={preview}
           role="status"
@@ -318,7 +312,7 @@ function Downloads({
               href={artifactUrl(jobId, artifact.name)}
               download={artifact.name}
               data-testid={`download-${artifact.role}`}
-              className="tap flex w-full items-center justify-between gap-3 rounded-xl border border-line bg-surface-2 px-4 py-3 text-base transition-colors active:bg-line"
+              className="tap flex w-full items-center justify-between gap-3 rounded-xl border border-line bg-surface-2 px-3 py-3 text-base transition-colors active:bg-line"
             >
               <span className="min-w-0 flex-1 truncate">
                 {ARTIFACT_LABELS[artifact.role](artifact)}

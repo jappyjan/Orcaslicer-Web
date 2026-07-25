@@ -174,6 +174,36 @@ leading-dot-`E` traps from verified deviation #4.
 `apps/web` — React + Vite + Tailwind, built to static assets that the API serves from
 `/app/apps/web/dist`. One image, one process, same origin, no CORS.
 
+### The workspace
+
+The app is **one 3D viewport with everything else floating over it** — the arrangement
+OrcaSlicer's desktop build and SimplyPrint's web slicer both use — plus a `Prepare` /
+`Preview` switch between the plate and the toolpath. A labelled tool rail at the top left,
+camera buttons at the bottom left, and a dock carrying the print, the objects and the
+transform numbers.
+
+It is not a desktop layout shrunk, and three things are why:
+
+- **The dock is one column at every size.** Above 60 rem it is a card floating at the
+  right; below it, the same column as a bottom sheet with three heights — peek, half,
+  full — dragged or tapped by a 48 px handle. There is no second, mobile-only information
+  architecture to keep in step, and the phone is the case that was designed first.
+- **The free rectangle is measured and published.** Whatever the panels are not covering
+  is exposed as `--free-*` custom properties and through `useViewportInsets()`. Overlays
+  position against it and the scene offsets its projection into it (`setViewOffset` over a
+  window the same size as the frame, so the frustum slides rather than narrowing and
+  tap-to-select keeps landing where it looks like it does), and a camera fit frames to it
+  rather than to the canvas. Without that, on a phone the plate would centre itself behind
+  the sheet.
+- **Nothing on the toolbar is an unlabelled icon.** The desktop original explains itself
+  with tooltips and a tooltip needs a pointer, so every tool is a 48 px icon with its name
+  printed underneath. Choosing Rotate on a phone also raises the sheet and scrolls the
+  rotation fields into it — the tool and the numbers it opens are in different places, and
+  the layout owns that seam rather than leaving it to the user.
+
+A slice no longer takes the screen away: progress arrives in the dock while the plate
+stays visible, and the finished toolpath is one tap away in the same viewport.
+
 The whole flow is upload → printer → nozzle → quality → filament → slice → download, and
 it is shaped by hard constraint #5: **mobile is the primary target, not a responsive
 afterthought.** Concretely, and verified in Chromium at 390×844 with touch emulation:
@@ -211,8 +241,8 @@ npm run dev -w @orca-web/web
 `apps/web/src/three` + `apps/web/src/state/plate.ts` — a three.js build plate you arrange
 with a thumb, and the serialisation that makes the slice land where the screen said.
 
-The whole screen is one line of the brief made literal: **transform via an explicit mode
-toggle with sliders and numeric fields, not desktop-style drag gizmos.**
+It is one line of the brief made literal: **transform via an explicit mode toggle with
+sliders and numeric fields, not desktop-style drag gizmos.**
 
 - **The finger in the 3D view only moves the camera.** One finger orbits, two pan and
   zoom, a tap selects. Nothing in the viewport is draggable — a drag handle on a phone is
@@ -220,11 +250,11 @@ toggle with sliders and numeric fields, not desktop-style drag gizmos.**
   not used: its two-finger gesture dollies and pans at once, so a pan always zooms a
   little. Here a pinch whose distance changed is a zoom and one whose midpoint moved is a
   pan, decided per move.
-- **Move / Rotate / Scale are three full-width tabs**, each with a slider _and_ a number
-  field. The slider is how a thumb says "a bit to the left"; the field is how it says
-  120.0 mm — on a 256 mm bed at 390 px, one pixel is 0.7 mm, so a slider alone cannot hit
-  a millimetre. Duplicate, delete, lay-flat, drop-to-bed, centre and ±90° are labelled
-  full-width rows.
+- **Move / Rotate / Scale are three tabs in the dock**, each with a slider _and_ a number
+  field, and each also reachable from the floating rail. The slider is how a thumb says "a
+  bit to the left"; the field is how it says 120.0 mm — on a 256 mm bed at 390 px, one
+  pixel is 0.7 mm, so a slider alone cannot hit a millimetre. Duplicate, delete, lay-flat,
+  drop-to-bed, centre and ±90° are labelled full-width rows.
 - **The plate is the printer's own.** `printable_area`, `printable_height` and
   `bed_exclude_area` come from the selected machine preset, fully resolved. Nothing is
   hardcoded — an X1C is 256 × 256 × 250 with a wipe pad in the front-left corner, and a
@@ -258,15 +288,16 @@ and `Metadata/plate_1.png` is present and non-blank in the served archive.
 
 ## The G-code preview (M5, client side)
 
-`apps/web/src/three/preview-*.ts` + `apps/web/src/state/preview.ts`. Press **Preview
-G-code** on a finished job — or open `#preview=<jobId>` directly, which is what the
+`apps/web/src/three/preview-*.ts` + `apps/web/src/state/preview.ts`. Switch to the
+**Preview** tab on a finished job — or open `#preview=<jobId>` directly, which is what the
 acceptance test does.
 
 The budget is the design: **a 40 MB G-code file must open on a 4 GB phone without crashing
 the tab**, and the layer slider must stay responsive while scrubbing.
 
-- **A layer window, never the model.** Two sliders: which layer you are looking at, and how
-  many layers below it to draw. A single "everything up to here" slider — what desktop
+- **A layer window, never the model.** Two sliders: which layer you are looking at — that
+  one runs down the right-hand edge of the viewport, where the desktop build puts it — and
+  how many layers below it to draw. A single "everything up to here" slider — what desktop
   slicers offer — holds the whole model by the time it reaches the top. The window is
   capped by _segments and bytes_, not by a layer count, because a layer of skirt and a
   layer of dense infill are nothing alike on either axis.

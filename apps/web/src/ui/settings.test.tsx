@@ -224,7 +224,7 @@ describe('the settings sheet', () => {
       target: { value: '235' },
     });
     // The untouched element is carried through, and both arrive as numbers: the engine
-    // reads the element type to choose `,` over `;` (SPEC deviation #25).
+    // reads the element type to choose `,` over `;` (SPEC deviation #27).
     expect(onChange).toHaveBeenCalledWith({ overrides: { nozzle_temperature: [235, 220] } });
   });
 

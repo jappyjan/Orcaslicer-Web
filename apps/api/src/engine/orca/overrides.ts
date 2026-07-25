@@ -22,7 +22,7 @@
  *    argv token per override and never a `--key value` pair. That subsumes deviation
  *    #23's "bare flag to turn on, `=` form to turn off" — `--key=1` turns one on just as
  *    well and needs no special case in the caller.
- *  - **Vector separators depend on the element type** (SPEC deviation #25). Numeric and
+ *  - **Vector separators depend on the element type** (SPEC deviation #27). Numeric and
  *    point vectors split on `,`; string vectors split on `;`. Getting it backwards is
  *    silent for numbers — `--nozzle-temperature "235;240"` yields the one-element vector
  *    `["235"]` at exit 0 — and fatal for points, where `--printable-area "0x0;180x0;…"`

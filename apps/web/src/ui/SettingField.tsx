@@ -149,7 +149,7 @@ function toText(value: string | number | boolean | undefined): string {
  *
  * The *types* matter downstream: the engine picks a vector separator from the element
  * type, and a numeric vector sent as strings would still be joined correctly but a
- * genuinely-string vector sent as numbers would not (SPEC deviation #25). So a numeric
+ * genuinely-string vector sent as numbers would not (SPEC deviation #27). So a numeric
  * option becomes a number here, at the point the schema is in hand.
  */
 export function toSettingValue(

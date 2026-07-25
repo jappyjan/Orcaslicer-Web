@@ -240,7 +240,7 @@ describe('M6 acceptance — an override demonstrably changes the G-code', () => 
     expect(changedArcs).toBeLessThan(stockArcs / 4);
   }, 300_000);
 
-  it('per-extruder array: nozzle_temperature, joined with a comma (SPEC deviation #25)', async () => {
+  it('per-extruder array: nozzle_temperature, joined with a comma (SPEC deviation #27)', async () => {
     expect(configValue(stock, 'nozzle_temperature')).toBe('220');
     expect(countLines(stock, /^M10[49] .*S220/)).toBe(6);
 

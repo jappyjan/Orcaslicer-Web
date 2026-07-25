@@ -11,7 +11,7 @@
  *     and the server cannot be talked into something the client never offers.
  *  2. **Coercing values to the declared shape.** JSON gives us `0.28` and `"0.28"` and
  *     `["0.28"]` interchangeably, and the engine's serialiser reads the *JS* type to pick
- *     a vector separator (SPEC deviation #25). So the wire value is coerced to what the
+ *     a vector separator (SPEC deviation #27). So the wire value is coerced to what the
  *     schema says the option is before it reaches the engine, not after.
  *
  * Nothing here knows about OrcaSlicer's CLI; that stays behind the engine port.

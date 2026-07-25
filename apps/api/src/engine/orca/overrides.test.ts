@@ -2,7 +2,7 @@
  * Regression tests for the override serialiser.
  *
  * Every assertion here corresponds to something measured against the pinned 2.4.2 binary
- * (see the module header, and SPEC deviations #23 and #25). The failure modes they guard
+ * (see the module header, and SPEC deviations #23 and #27). The failure modes they guard
  * are all *quiet*: a naive `--key value` serialiser reports `No such file: 0`, which
  * reads as a missing model rather than a rejected setting, and a naive `;`-joined vector
  * exits 0 having thrown away every element but the first.
@@ -67,9 +67,9 @@ describe('overrideArgs', () => {
     });
   });
 
-  // -- SPEC deviation #25 ----------------------------------------------------
+  // -- SPEC deviation #27 ----------------------------------------------------
 
-  describe('vectors (SPEC deviation #25)', () => {
+  describe('vectors (SPEC deviation #27)', () => {
     it('joins numeric vectors with a comma', () => {
       // `;` here yields a ONE-element vector at exit 0 — silent data loss.
       expect(overrideArgs({ nozzle_temperature: [235, 240] })).toEqual([

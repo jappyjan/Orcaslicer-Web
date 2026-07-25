@@ -564,7 +564,7 @@ export class OrcaCliEngine implements SlicerEngine {
 
     // M6's diff-and-override: the only thing that changes a setting for this job, and the
     // reason no new profile file is ever written. See overrides.ts for why every one of
-    // these is a single `--key=value` token (SPEC deviations #23 and #25).
+    // these is a single `--key=value` token (SPEC deviations #23 and #27).
     args.push(...overrideArgs(job.overrides));
 
     return args;

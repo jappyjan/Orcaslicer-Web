@@ -143,7 +143,7 @@ export type JobInput =
  *
  * The *element types matter*: an engine adapter is entitled to serialise a vector of
  * numbers differently from a vector of strings, and OrcaSlicer's CLI does exactly that
- * (SPEC deviation #25). Send numbers as numbers.
+ * (SPEC deviation #27). Send numbers as numbers.
  */
 export type SettingValue =
   string | number | boolean | ReadonlyArray<string | number | boolean> | null;

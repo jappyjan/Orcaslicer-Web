@@ -110,7 +110,7 @@ describe('coerceValue', () => {
 
   it('keeps a vector a vector, with typed elements', () => {
     // The element types are what the engine's serialiser reads to choose `,` over `;`
-    // (SPEC deviation #25), so a numeric vector must not arrive as strings.
+    // (SPEC deviation #27), so a numeric vector must not arrive as strings.
     const temps = option({ key: 'nozzle_temperature', valueKind: 'int', isArray: true });
     expect(coerceValue(temps, ['235', '240'])).toEqual([235, 240]);
     expect(coerceValue(temps, 235)).toEqual([235]);

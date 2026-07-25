@@ -88,7 +88,7 @@ export interface SliceJob {
    *
    * The *values are typed*, and that is part of the contract rather than convenience: an
    * adapter is entitled to serialise a vector of numbers differently from a vector of
-   * strings, and OrcaSlicer's CLI does (SPEC deviation #25). Whatever produces these must
+   * strings, and OrcaSlicer's CLI does (SPEC deviation #27). Whatever produces these must
    * therefore coerce them to the shape the config schema declares, not stringify them.
    */
   overrides: SettingOverrides;

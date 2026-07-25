@@ -160,12 +160,25 @@ describe('coerceOverrides', () => {
 // Against the real generated schema
 // ---------------------------------------------------------------------------
 
+/**
+ * `/generated` is produced at image-build time, so this half only runs where it exists —
+ * in the container and after `docker compose build`, not on a bare checkout.
+ *
+ * The file is read **here rather than inside the suite body**, and that is the whole
+ * point of the shape. `describe.skip` still *evaluates* its callback to collect the tests
+ * it is about to mark skipped, so a `readFileSync` in there throws on a bare checkout and
+ * fails the file at collection time — which is what CI's "ENOENT: config-schema.json" was.
+ * A `null` here skips quietly, as intended.
+ */
 const realPath = configSchemaPath('2.4.2');
-const describeReal = existsSync(realPath) ? describe : describe.skip;
+const realSchema = existsSync(realPath)
+  ? (JSON.parse(readFileSync(realPath, 'utf8')) as ConfigSchemaDocument)
+  : null;
+const describeReal = realSchema === null ? describe.skip : describe;
 
 describeReal('the real OrcaSlicer 2.4.2 schema', () => {
-  const schema = JSON.parse(readFileSync(realPath, 'utf8')) as ConfigSchemaDocument;
-  const options = Object.values(schema.options);
+  const schema = realSchema as ConfigSchemaDocument;
+  const options = Object.values(schema?.options ?? {});
 
   it('defines 751 options, of which the develop tier is never offered', () => {
     expect(options).toHaveLength(751);
